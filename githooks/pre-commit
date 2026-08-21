@@ -1,0 +1,15 @@
+#!/bin/bash
+# 擋 bash 3.2 的 UTF-8 變數名坑：$var 後緊貼非 ASCII 字元（全形標點等）
+# 會把多位元組字元吃進變數名稱，set -u 下炸 unbound variable。一律寫 ${var}。
+set -euo pipefail
+fail=0
+while IFS= read -r f; do
+  head -1 "$f" 2>/dev/null | grep -q '^#!.*bash' || continue
+  hits=$(perl -ne 'print "$.:$_" if /\$[a-zA-Z_][a-zA-Z0-9_]*[^\x00-\x7F]/' "$f")
+  if [ -n "$hits" ]; then
+    echo "$f 有變數緊貼非 ASCII 字元（bash 3.2 會炸），請改寫成 \${var}："
+    echo "$hits"
+    fail=1
+  fi
+done < <(git diff --cached --name-only --diff-filter=ACM)
+exit "$fail"
