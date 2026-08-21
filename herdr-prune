@@ -1,0 +1,196 @@
+#!/bin/bash
+# herdr-prune — 互動挑選並清理 herdr 管理的 agent（fzf 多選）
+#
+# herdr 管的 agent 走 `herdr agent prompt /exit` 請它自行退出，pane 保留，
+# 之後可用 `herdr agent start --resume` 原地復原，不會遺失對話。
+# herdr 之外直開的 claude / grok process 退回 SIGTERM 處理。
+#
+# 用法：herdr-prune            互動挑選（TAB 多選、Enter 清理、Esc 取消）
+#       herdr-prune --list     只列出，不清理
+#       herdr-prune --restore  復原上一次清理掉的 herdr agent
+set -euo pipefail
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-prune"
+RESTORE_LOG="$STATE_DIR/last-prune.tsv"
+mkdir -p "$STATE_DIR"
+
+command -v herdr >/dev/null || { echo "找不到 herdr 指令。" >&2; exit 1; }
+command -v jq >/dev/null || { echo "找不到 jq 指令。" >&2; exit 1; }
+command -v fzf >/dev/null || { echo "找不到 fzf 指令。" >&2; exit 1; }
+
+# 收集自身的祖先 PID，避免把「正在跑這個指令的 session」列進候選
+ancestors=""
+p=$$
+while [ "$p" -gt 1 ]; do
+  ancestors="$ancestors $p"
+  p=$(ps -o ppid= -p "$p" | tr -d ' ') || break
+done
+is_ancestor() { case " $ancestors " in *" $1 "*) return 0 ;; esac; return 1; }
+
+# pane 的 agent 本體是 pane shell 的直屬子 process（前景 process 在 agent
+# 跑工具時會是孫層子 process，抓前景會拿錯 PID 與 RSS）
+pane_shell_pid() {
+  herdr pane process-info --pane "$1" 2>/dev/null |
+    jq -r '.result.process_info.shell_pid // empty'
+}
+
+agent_pid_of_pane() {
+  local shell_pid kind pid args
+  shell_pid=$(pane_shell_pid "$1"); kind=$2
+  [ -n "$shell_pid" ] || return 0
+  ps -axo pid=,ppid=,args= | while read -r pid ppid args; do
+    [ "$ppid" = "$shell_pid" ] || continue
+    case "$args" in "$kind"|"$kind "*|*/"$kind"|*/"$kind "*) echo "$pid"; return ;; esac
+  done
+}
+
+pane_is_shell() {
+  local argv0
+  argv0=$(herdr pane process-info --pane "$1" 2>/dev/null |
+    jq -r '.result.process_info.foreground_processes[0].argv0 // empty')
+  case "$argv0" in zsh|bash|sh|fish|-zsh|-bash) return 0 ;; esac
+  return 1
+}
+
+# ---------- 復原模式 ----------
+if [ "${1:-}" = "--restore" ]; then
+  if [ ! -s "$RESTORE_LOG" ]; then
+    echo "沒有可復原的紀錄（$RESTORE_LOG 是空的）。"
+    exit 0
+  fi
+  echo "上一次清理的 agent："
+  column -t -s$'\t' < "$RESTORE_LOG"
+  printf "全部復原？[y/N] "
+  read -r ans
+  [ "$ans" = "y" ] || [ "$ans" = "Y" ] || { echo "取消。"; exit 0; }
+  ok=0; fail=0
+  while IFS=$'\t' read -r pane kind session _cwd _title; do
+    [ -n "$pane" ] || continue
+    if ! pane_is_shell "$pane"; then
+      if [ -n "$(agent_pid_of_pane "$pane" "$kind")" ]; then
+        echo "$pane $kind 已在執行中，略過。"
+        ok=$((ok + 1))
+      else
+        echo "$pane 前景已有其他 process，跳過。"
+        fail=$((fail + 1))
+      fi
+      continue
+    fi
+    if herdr agent start "$kind" --kind "$kind" --pane "$pane" -- --resume "$session" >/dev/null 2>&1; then
+      echo "$pane $kind 已復原（--resume ${session}）"
+      ok=$((ok + 1))
+    else
+      echo "$pane $kind 復原失敗，可手動執行：herdr agent start $kind --kind $kind --pane $pane -- --resume $session"
+      fail=$((fail + 1))
+    fi
+  done < "$RESTORE_LOG"
+  [ "$fail" -eq 0 ] && : > "$RESTORE_LOG"
+  echo "復原完成：成功 ${ok}、失敗 ${fail}。"
+  exit 0
+fi
+
+# ---------- 收集候選 ----------
+snapshot=$(herdr api snapshot)
+
+# herdr 管的 agent；TSV：kind pane status session cwd title pid rss etime
+herdr_rows=""
+herdr_pids=""
+while IFS=$'\t' read -r kind pane status session cwd title; do
+  pid=$(agent_pid_of_pane "$pane" "$kind")
+  [ -n "$pid" ] || continue
+  if is_ancestor "$pid"; then continue; fi
+  read -r rss etime <<< "$(ps -o rss=,etime= -p "$pid" 2>/dev/null | awk '{print $1, $2}')"
+  [ -n "${rss:-}" ] || continue
+  herdr_pids="$herdr_pids $pid"
+  herdr_rows="$herdr_rows$(printf 'herdr\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+    "$kind" "$pane" "$status" "$pid" "$((rss / 1024))MB" "$etime" "${cwd/#$HOME/~}" "$title")
+"
+done < <(echo "$snapshot" | jq -r '.result.snapshot.agents[] |
+  [.agent, .pane_id, .agent_status, .agent_session.value // "",
+   .cwd, .terminal_title_stripped] | @tsv')
+
+# session id 由 snapshot 查表（fzf 顯示行不放，太長；macOS bash 3.2 沒有 associative array）
+session_for_pane() {
+  echo "$snapshot" | jq -r --arg p "$1" \
+    '.result.snapshot.agents[] | select(.pane_id == $p) | .agent_session.value // ""'
+}
+
+# herdr 之外直開的 claude / grok
+proc_rows=""
+while read -r pid rss etime args; do
+  case "$args" in
+    claude|claude\ *|*/claude|*/claude\ *|grok|grok\ *|*/grok|*/grok\ *) ;;
+    *) continue ;;
+  esac
+  if is_ancestor "$pid"; then continue; fi
+  case " $herdr_pids " in *" $pid "*) continue ;; esac
+  kind=claude; case "$args" in grok*|*/grok*) kind=grok ;; esac
+  cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+  proc_rows="$proc_rows$(printf 'proc\t%s\t-\t-\t%s\t%s\t%s\t%s\t%s' \
+    "$kind" "$pid" "$((rss / 1024))MB" "$etime" "${cwd/#$HOME/~}" \
+    "$(echo "$args" | cut -c1-50)")
+"
+done < <(ps -eo pid=,rss=,etime=,args=)
+
+rows="${herdr_rows}${proc_rows}"
+if [ -z "$(echo "$rows" | tr -d '[:space:]')" ]; then
+  echo "沒有可清理的 agent。"
+  exit 0
+fi
+
+table=$(echo "$rows" | grep -v '^$' | column -t -s$'\t')
+header="來源   AGENT   PANE   狀態     PID    RSS      UPTIME      CWD / 指令"
+if [ "${1:-}" = "--list" ]; then
+  echo "$header"
+  echo "$table"
+  exit 0
+fi
+
+selected=$(echo "$table" | fzf --multi --reverse \
+  --header="$header
+TAB 勾選多個、Enter 清理所選、Esc 取消。herdr agent 走 /exit 退出，可用 herdr-prune --restore 復原；working 狀態的 agent 還在做事，勾選前想清楚") || {
+  echo "取消，未清理任何 agent。"
+  exit 0
+}
+
+echo "$selected"
+printf "清理以上 %d 個 agent？[y/N] " "$(echo "$selected" | wc -l | tr -d ' ')"
+read -r ans
+[ "$ans" = "y" ] || [ "$ans" = "Y" ] || { echo "取消。"; exit 0; }
+
+: > "$RESTORE_LOG.tmp"
+sig_pids=""
+while read -r src kind pane _status pid _rest; do
+  if [ "$src" = "herdr" ]; then
+    # agent_not_running 代表 /exit 已生效、wait 撲空，視為成功
+    out=$(herdr agent prompt "$pane" "/exit" --wait --until unknown --timeout 20000 2>&1) || true
+    sleep 1
+    if pane_is_shell "$pane"; then
+      echo "$pane $kind 已退出（pane 保留）"
+      printf '%s\t%s\t%s\n' "$pane" "$kind" "$(session_for_pane "$pane")" >> "$RESTORE_LOG.tmp"
+    else
+      echo "$pane $kind 未退出，herdr 回應：$out"
+    fi
+  else
+    sig_pids="$sig_pids $pid"
+    kill "$pid" 2>/dev/null || true
+  fi
+done <<< "$selected"
+
+if [ -n "$sig_pids" ]; then
+  sleep 2
+  for pid in $sig_pids; do
+    if ps -p "$pid" >/dev/null 2>&1; then
+      echo "PID $pid 未退出（可自行 kill -9 ${pid}）"
+    else
+      echo "PID $pid 已終止（可用 claude --resume 或 grok --resume 復原）"
+    fi
+  done
+fi
+
+if [ -s "$RESTORE_LOG.tmp" ]; then
+  mv "$RESTORE_LOG.tmp" "$RESTORE_LOG"
+  echo "復原指令：herdr-prune --restore"
+else
+  rm -f "$RESTORE_LOG.tmp"
+fi
