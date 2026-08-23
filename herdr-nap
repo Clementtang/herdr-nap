@@ -1,25 +1,25 @@
 #!/bin/bash
-# herdr-prune — 互動挑選並清理 herdr 管理的 agent（fzf 多選）
+# herdr-nap — 互動挑選並清理 herdr 管理的 agent（fzf 多選）
 #
 # herdr 管的 agent 走 `herdr agent prompt /exit` 請它自行退出，pane 保留，
 # 之後可用 `herdr agent start --resume` 原地復原，不會遺失對話。
 # herdr 之外直開的 claude / grok process 退回 SIGTERM 處理。
 #
-# 用法：herdr-prune            互動挑選（TAB 多選、Enter 清理、Esc 取消）
-#       herdr-prune --list     只列出，不清理
-#       herdr-prune --restore  復原先前清理掉的 herdr agent
+# 用法：herdr-nap            互動挑選（TAB 多選、Enter 清理、Esc 取消）
+#       herdr-nap --list     只列出，不清理
+#       herdr-nap --restore  復原先前清理掉的 herdr agent
 set -euo pipefail
 
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-prune"
-RESTORE_LOG="$STATE_DIR/last-prune.tsv"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-nap"
+RESTORE_LOG="$STATE_DIR/napped.tsv"
 mkdir -p "$STATE_DIR"
 
 case "${1:-}" in
   ""|--list|--restore) ;;
   *)
-    echo "用法：herdr-prune            互動挑選（TAB 多選、Enter 清理、Esc 取消）"
-    echo "      herdr-prune --list     只列出，不清理"
-    echo "      herdr-prune --restore  復原先前清理掉的 herdr agent"
+    echo "用法：herdr-nap            互動挑選（TAB 多選、Enter 清理、Esc 取消）"
+    echo "      herdr-nap --list     只列出，不清理"
+    echo "      herdr-nap --restore  復原先前清理掉的 herdr agent"
     exit 1
     ;;
 esac
@@ -153,7 +153,7 @@ fi
 
 selected=$({ echo "$header_row"; echo "$rows"; } | fzf --multi --reverse \
   --delimiter=$'\t' --with-nth="$FIELDS_SHOWN" --header-lines=1 \
-  --header="TAB 勾選多個、Enter 清理所選、Esc 取消。herdr agent 走 /exit 退出，可用 herdr-prune --restore 復原；working 狀態的 agent 還在做事，勾選前想清楚") || {
+  --header="TAB 勾選多個、Enter 清理所選、Esc 取消。herdr agent 走 /exit 退出，可用 herdr-nap --restore 復原；working 狀態的 agent 還在做事，勾選前想清楚") || {
   echo "取消，未清理任何 agent。"
   exit 0
 }
@@ -203,5 +203,5 @@ if [ -n "$pruned" ]; then
     printf '%s' "$pruned"
   } > "$RESTORE_LOG.tmp" || true
   mv "$RESTORE_LOG.tmp" "$RESTORE_LOG"
-  echo "復原指令：herdr-prune --restore"
+  echo "復原指令：herdr-nap --restore"
 fi
