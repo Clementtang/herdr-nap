@@ -10,9 +10,11 @@ herdr-nap --list     只列出，不清理
 herdr-nap --restore  復原先前清理掉的 herdr agent
 ```
 
-- herdr 管的 agent（claude、grok 等）走 `herdr agent prompt <pane> /exit` 請它自行退出：process 結束、pane 保留、herdr 狀態同步，之後 `--restore` 用 `herdr agent start <name> --kind <kind> --pane <pane> -- --resume <session-id>` 原地復原，對話不遺失。已實測 claude 與 grok 都吃 `/exit`。
+- herdr 管的 agent（claude、grok 等）走 `herdr agent prompt <pane> /exit` 請它自行退出：process 結束、pane 保留、herdr 狀態同步。已實測 claude 與 grok 都吃 `/exit`。
+- 休眠後 pane 裡會留一個待命 stub，顯示釋放了多少記憶體與 session id，**按 Enter 就地復原**、Ctrl-C 回到一般 shell。整批復原走 `--restore`，對 stub 待命中的 pane 送 Enter，對已回到 shell prompt 的 pane 走 `herdr agent start <name> --kind <kind> --pane <pane> -- --resume <session-id>`。兩條路都不遺失對話。
+- 自己在 pane 裡按 Enter 復原之後不必收拾，下次執行時過期紀錄與 stub 檔會自動清掉。
 - herdr 之外直開的 claude / grok 維持 SIGTERM fallback，`claude --resume` 可復原。
-- 防呆：排除自身 pane、清理前 y/N 確認、逐一驗證退出並回報、復原紀錄存 `~/.local/state/herdr-nap/napped.tsv`。
+- 防呆：排除自身 pane、清理前 y/N 確認、逐一驗證退出並回報、復原紀錄存 `~/.local/state/herdr-nap/napped.tsv`、stub 存 `~/.local/state/herdr-nap/panes/`。
 
 安裝方式：`~/bin/herdr-nap` symlink 到本專案的 `herdr-nap`，改這裡即生效。
 
@@ -36,9 +38,13 @@ git config core.hooksPath githooks
 - `herdr pane release-agent` 只解除 agent 註冊、不停 process，不能用來釋放記憶體（#631 社群已證實）。
 - 自身排除：herdr 列比對 `herdr pane current` 的 pane id；散裝列走祖先 PID 鏈（工具在 herdr 之外執行時 pane current 拿不到，祖先鏈也是後備）。
 - 復原紀錄 `napped.tsv` 是累積式：連清多批會合併（同 pane 以最新為準），`--restore` 只把復原失敗的留在紀錄裡。
+- **stub 必須是 pane shell 的子 process，不能 exec 取代 pane shell**：stub 內部再 `exec` 成 agent，agent 才會落在「pane shell 的直屬子 process」這個位置，下次清理它才不會連 pane 一起收掉。這個設計參考 [bengemine/herdr-hibernate](https://github.com/bengemine/herdr-hibernate)。
+- **stub 待命時 pane 不在 shell prompt 上**，`herdr agent start` 會被拒絕，所以 `--restore` 對這種 pane 改送 `herdr pane send-keys <pane> enter`，讓 stub 自己 exec。
+- **bash 3.2 的 `printf %q` 會把中文逐位元組轉成八進位跳脫**：產出的 stub 還能執行，但檔案完全不可讀。自己包單引號（`sq()`）即可。
 
 ## 已知限制
 
+- 按 Enter 就地復原時，agent 是由 stub 直接 `exec` 起來的，herdr 會用 agent 種類重新命名，原本 rename 過的 agent 名稱會遺失。走 `--restore` 則會帶回原名。
 - working 狀態的 agent 也會列出（fzf header 有提醒），要不要清由使用者判斷。
 - revelio 的 llama-server（surya OCR，約 1.4 GB）是合法工作負載，不在本工具清單內，不要因為記憶體大就去殺它的宿主。
 
