@@ -12,9 +12,12 @@ herdr-nap --restore  復原先前清理掉的 herdr agent
 
 - herdr 管的 agent（claude、grok 等）走 `herdr agent prompt <pane> /exit` 請它自行退出：process 結束、pane 保留、herdr 狀態同步。已實測 claude 與 grok 都吃 `/exit`。
 - 休眠後 pane 裡會留一個待命 stub，顯示釋放了多少記憶體與 session id，**按 Enter 就地復原**、Ctrl-C 回到一般 shell。整批復原走 `--restore`，對 stub 待命中的 pane 送 Enter，對已回到 shell prompt 的 pane 走 `herdr agent start <name> --kind <kind> --pane <pane> -- --resume <session-id>`。兩條路都不遺失對話。
-- 自己在 pane 裡按 Enter 復原之後不必收拾，下次執行時過期紀錄與 stub 檔會自動清掉。
+- 自己在 pane 裡按 Enter 復原之後不必收拾，下次執行時過期紀錄與 stub 檔會自動清掉。判斷依據是 herdr 回報的 session id 與紀錄相符，**不是**「這個 pane 有同類 agent 在跑」。
+- pane 已經被別的 session 佔用時不會當成復原成功：報告衝突、紀錄留著，並附上換 pane 復原的指令。休眠中的 session id 只存在紀錄裡，刪掉就再也找不回來。
+- herdr 沒有回報 session id 的 agent，退出後不寫紀錄也不留 stub，並明講這個對話無法自動復原。
 - herdr 之外直開的 claude / grok 維持 SIGTERM fallback，`claude --resume` 可復原。
 - 防呆：排除自身 pane、清理前 y/N 確認、逐一驗證退出並回報、復原紀錄存 `~/.local/state/herdr-nap/napped.tsv`、stub 存 `~/.local/state/herdr-nap/panes/`。
+- `--list` 是唯讀模式，不動狀態檔；依賴檢查按 mode 做，沒裝 fzf 仍能 `--list` 與 `--restore`。
 
 安裝方式：`~/bin/herdr-nap` symlink 到本專案的 `herdr-nap`，改這裡即生效。
 
@@ -41,6 +44,9 @@ git config core.hooksPath githooks
 - **stub 必須是 pane shell 的子 process，不能 exec 取代 pane shell**：stub 內部再 `exec` 成 agent，agent 才會落在「pane shell 的直屬子 process」這個位置，下次清理它才不會連 pane 一起收掉。這個設計參考 [bengemine/herdr-hibernate](https://github.com/bengemine/herdr-hibernate)。
 - **stub 待命時 pane 不在 shell prompt 上**，`herdr agent start` 會被拒絕，所以 `--restore` 對這種 pane 改送 `herdr pane send-keys <pane> enter`，讓 stub 自己 exec。
 - **bash 3.2 的 `printf %q` 會把中文逐位元組轉成八進位跳脫**：產出的 stub 還能執行，但檔案完全不可讀。自己包單引號（`sq()`）即可。
+- **「這個 session 回來了」只能靠 `herdr agent list` 的 `agent_session.value` 比對**：process 存在只證明同類 agent 在跑，可能是完全不同的 session。用 process 存在當復原成功，會把紀錄裡唯一的 session id 洗掉。
+- **整份 `ps` 只拍一次快照**，找直屬子 process、RSS、etime、散裝行程都從同一份用 awk 取；需要當下狀態時（送出 `/exit` 或 resume 之後）再明確 refresh。先前每個 pane 掃一次全表，20 個 agent 就是 20 次。
+- **bash 3.2 的 pipeline 裡 `while` 跑在 subshell**，裡面的 `return` 不會從函式返回，只會結束 subshell。helper 不要寫成 `ps | while ... return`。
 
 ## 已知限制
 
