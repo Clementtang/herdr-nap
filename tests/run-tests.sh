@@ -225,6 +225,26 @@ test_should_use_field_list_that_both_cut_and_fzf_accept() {
   fi
 }
 
+# ---------- 釘選排除 ----------
+test_should_load_patterns_ignoring_comments_and_blank_lines() {
+  local f; f=$(mktemp)
+  printf '# 註解\n\nrevelio\n  \nherdr-nap-dev\n' > "$f"
+  assert_eq $'revelio\nherdr-nap-dev' "$(exclude_patterns "$f")"
+  assert_eq "" "$(exclude_patterns "$f.missing")" missing-file
+  rm -f "$f"
+}
+test_should_pin_when_title_or_label_contains_pattern() {
+  local p=$'revelio\ndev-0918'
+  is_pinned "$p" "surya OCR revelio host" "";        assert_eq 0 $? title
+  is_pinned "$p" "" "herdr-nap-dev-0918";           assert_eq 0 $? label
+  is_pinned "$p" "91app-map" "w5:t3";               assert_eq 1 $? neither
+  is_pinned ""   "revelio" "revelio";               assert_eq 1 $? no-patterns
+}
+test_should_dim_only_pinned_lines_when_on_a_tty() {
+  # 非 tty 時原樣輸出，管線接下去的人不會吃到跳脫碼
+  assert_eq $'a b w1:p1 x\na b w2:p1 y' "$(printf 'a b w1:p1 x\na b w2:p1 y\n' | dim_pinned_lines "w1:p1")"
+}
+
 # ---------- stub_path ----------
 test_should_sanitize_pane_id_for_stub_filename() {
   STUB_DIR=/s

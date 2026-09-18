@@ -12,6 +12,7 @@ herdr-nap --restore  復原先前清理掉的 herdr agent
 
 - 清單依**閒置時間**排序，閒置最久的在最上面。閒置取對話紀錄最後一筆的 timestamp（claude 讀 `~/.claude/projects/*/<session>.jsonl` 與其 `subagents/*.jsonl`，grok 讀 `~/.grok/sessions/*/<session>/updates.jsonl`），不是 process 年齡，resume 過的舊 session 不會顯示成很新。RSS 是整棵 process 樹（含 MCP 與工具子行程）的合計。備註欄標記「子行程N」「subagent活動中」「剛啟動」「無對話紀錄」，只標記不擋。
 - fzf 下方有預覽窗，顯示游標所在 pane 的目前畫面（`herdr pane read --source visible`），Ctrl-/ 切換。
+- **釘選排除**：`~/.config/herdr-nap/exclude` 一行一個字樣（`#` 開頭是註解），pane 標題或 tab 標籤含該字樣的 agent 不進 fzf 清單，連誤點的機會都沒有；`--list` 仍列出，備註標「釘選」並灰顯（輸出到終端時才上色）。用字樣不用 pane id 或 tab id，因為 id 在 workspace 關開後會變。
 - herdr 管的 agent（claude、grok 等）走 `herdr agent prompt <pane> /exit` 請它自行退出：process 結束、pane 保留、herdr 狀態同步。已實測 claude 與 grok 都吃 `/exit`。
 - 休眠後 pane 裡會留一個待命 stub，顯示釋放了多少記憶體與 session id，**按 Enter 就地復原**、Ctrl-C 回到一般 shell。整批復原走 `--restore`，對 stub 待命中的 pane 送 Enter，對已回到 shell prompt 的 pane 走 `herdr agent start <name> --kind <kind> --pane <pane> -- <原啟動旗標> --resume <session-id>`。兩條路都不遺失對話。
 - **復原時帶回原本的啟動旗標**（例如 `--dangerously-skip-permissions`、`--model`）。休眠時從 ps 取 agent 的 argv，去掉 `--resume`/`-r`/`-c`/`--session-id`/`--fork-session` 這類接續 session 的旗標與裸位置參數（多半是啟動 prompt，重播會被當成新訊息），其餘存進紀錄第 6 欄。舊的 5 欄紀錄照常可讀，argv 視為空。

@@ -13,15 +13,19 @@ set -euo pipefail
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-nap"
 RESTORE_LOG="$STATE_DIR/napped.tsv"
 STUB_DIR="$STATE_DIR/panes"
+# 釘選排除：一行一個字樣，pane 標題或 tab 標籤含該字樣就不進 fzf 清單（--list 仍列出、灰顯）。
+# 用字樣不用 pane id 或 tab id，因為 id 在 workspace 關開後會變。
+EXCLUDE_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/herdr-nap/exclude"
 
 # 資料列全程 TSV，顯示的欄位排前面（cut 只會照升冪輸出，顯示順序就是欄位順序）：
 #   1 src 2 kind 3 pane 4 status 5 pid 6 rss 7 idle 8 risk 9 cwd 10 title
-#   11 etime 12 name 13 session 14 argv 15 idle_secs
+#   11 etime 12 name 13 session 14 argv 15 idle_secs 16 pinned
 # 欄位不做 pad，之後要拿去打 herdr 的值保持原樣，對齊交給顯示層（--list 用
 # column -t、fzf 靠 tabstop）。fzf 預覽窗用 {3} 取 pane，動欄位順序時要一起改。
 # 這個值同時餵給 cut -f 與 fzf --with-nth，只能用逗號列舉：cut 的 1-10 fzf 不認。
 FIELDS_SHOWN='1,2,3,4,5,6,7,8,9,10'
 IDLE_SORT_FIELD=15
+PINNED_FIELD=16
 SUBAGENT_ACTIVE_WINDOW=600   # 秒。subagent 紀錄在這段時間內更新過就標記
 JUST_STARTED_WINDOW=300      # 秒。剛啟動或剛復原的 agent 標記出來
 
@@ -31,6 +35,31 @@ need() { command -v "$1" >/dev/null || { echo "找不到 $1 指令。" >&2; exit
 # 需要當下狀態時（送出 /exit 或 resume 之後）由呼叫端明確 refresh。
 PS_DUMP=""
 refresh_ps_dump() { ps -axo pid=,ppid=,rss=,etime=,args= > "$PS_DUMP"; }
+
+# 釘選字樣：忽略空行與 # 開頭的註解，輸出一行一個
+exclude_patterns() {
+  [ -f "$1" ] || return 0
+  grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$1" || true
+}
+# 標題或 tab 標籤含任一字樣就算釘選。參數：patterns(換行分隔) title label
+is_pinned() {
+  local patterns=$1 title=$2 label=$3 pat
+  [ -n "$patterns" ] || return 1
+  while IFS= read -r pat; do
+    [ -n "$pat" ] || continue
+    case "$title" in *"$pat"*) return 0 ;; esac
+    case "$label" in *"$pat"*) return 0 ;; esac
+  done <<< "$patterns"
+  return 1
+}
+# 把 --list 輸出裡釘選的列變灰（只在輸出到終端時）。參數：pinned pane 清單（空白分隔）
+dim_pinned_lines() {
+  if [ -t 1 ] && [ -n "$1" ]; then
+    awk -v p=" $1 " 'index(p, " " $3 " ") { print "\033[2m" $0 "\033[0m"; next } 1'
+  else
+    cat
+  fi
+}
 
 pane_shell_pid() {
   herdr pane process-info --pane "$1" 2>/dev/null |
@@ -485,9 +514,16 @@ is_ancestor() { case " $ancestors " in *" $1 "*) return 0 ;; esac; return 1; }
 
 rows=()
 herdr_pids=""
+pinned_panes=""
 now=$(date +%s)
-while IFS=$'\t' read -r kind pane status name session cwd title; do
+patterns=$(exclude_patterns "$EXCLUDE_FILE")
+# tab 標籤（side bar 顯示的名字）一次拉齊，釘選比對要用
+tab_labels=$(herdr tab list 2>/dev/null | jq -r '.result.tabs[] | [.tab_id, .label // ""] | @tsv')
+while IFS=$'\t' read -r kind pane tab status name session cwd title; do
   [ "$pane" = "$self_pane" ] && continue
+  label=$(printf '%s\n' "$tab_labels" | awk -F'\t' -v t="$tab" '$1 == t { print $2; exit }')
+  pinned=0
+  if is_pinned "$patterns" "$title" "$label"; then pinned=1; pinned_panes="$pinned_panes $pane"; fi
   read -r pid _rss etime args <<< "$(agent_row_of_pane "$pane" "$kind")"
   [ -n "${pid:-}" ] || continue
   if is_ancestor "$pid"; then continue; fi
@@ -499,12 +535,14 @@ while IFS=$'\t' read -r kind pane status name session cwd title; do
   activity=$(max_epoch "$main_epoch" "$sub_epoch")
   if [ -n "$activity" ]; then idle_secs=$((now - activity)); else idle_secs=$(etime_to_secs "$etime"); fi
   [ "$idle_secs" -ge 0 ] || idle_secs=0
-  rows+=("$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+  risk=$(risk_markers "$session" "$etime" "$desc_count" "$now" "${activity:--}" "$sub_epoch")
+  if [ "$pinned" -eq 1 ]; then risk="釘選${risk:+,$risk}"; risk=${risk%,-}; fi
+  rows+=("$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
     herdr "$kind" "$pane" "$status" "$pid" "$((rss / 1024))MB" "$(fmt_age "$idle_secs")" \
-    "$(risk_markers "$session" "$etime" "$desc_count" "$now" "${activity:--}" "$sub_epoch")" \
-    "${cwd/#$HOME/~}" "$title" "$etime" "$name" "$session" "$(replay_flags "$args")" "$idle_secs")")
+    "$risk" "${cwd/#$HOME/~}" "$title" "$etime" "$name" "$session" "$(replay_flags "$args")" \
+    "$idle_secs" "$pinned")")
 done < <(herdr agent list | jq -r '.result.agents[] |
-  [.agent, .pane_id, .agent_status, .name // .agent, .agent_session.value // "",
+  [.agent, .pane_id, .tab_id // "", .agent_status, .name // .agent, .agent_session.value // "",
    .cwd, .terminal_title_stripped] | @tsv')
 
 # herdr 之外直開的 claude / grok（同一份 ps 快照，不再掃一次）
@@ -517,7 +555,7 @@ while read -r pid _ppid rss etime args; do
   cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
   read -r rss _desc_count <<< "$(tree_rss_of_pid "$pid")"
   # 散裝 process 沒有 session id 可查閒置，排序鍵給 -1 沉到最底
-  rows+=("$(printf '%s\t%s\t-\t-\t%s\t%s\t%s\t-\t%s\t%s\t%s\t-\t-\t-\t-1' \
+  rows+=("$(printf '%s\t%s\t-\t-\t%s\t%s\t%s\t-\t%s\t%s\t%s\t-\t-\t-\t-1\t0' \
     proc "$kind" "$pid" "$((rss / 1024))MB" "$(fmt_age "$(etime_to_secs "$etime")")" \
     "${cwd/#$HOME/~}" "$(echo "$args" | cut -c1-50)" "$etime")")
 done < "$PS_DUMP"
@@ -527,11 +565,21 @@ if [ "${#rows[@]}" -eq 0 ]; then
   exit 0
 fi
 
-header_row=$'來源\tAGENT\tPANE\t狀態\tPID\tRSS\t閒置\t備註\tCWD\t標題 / 指令\tUPTIME\tNAME\tSESSION\tARGV\tIDLE_SECS'
+header_row=$'來源\tAGENT\tPANE\t狀態\tPID\tRSS\t閒置\t備註\tCWD\t標題 / 指令\tUPTIME\tNAME\tSESSION\tARGV\tIDLE_SECS\tPINNED'
 # 閒置最久的排最上面，同秒數再依 pane 排，順序才穩定；RSS 是整棵 process 樹的合計
 sorted_rows=$(printf '%s\n' "${rows[@]}" | sort -t$'\t' -k"$IDLE_SORT_FIELD","$IDLE_SORT_FIELD"nr -k3,3)
 if [ "$MODE" = "--list" ]; then
-  { echo "$header_row"; printf '%s\n' "$sorted_rows"; } | cut -f"$FIELDS_SHOWN" | column -t -s$'\t'
+  { echo "$header_row"; printf '%s\n' "$sorted_rows"; } | cut -f"$FIELDS_SHOWN" | column -t -s$'\t' |
+    dim_pinned_lines "$pinned_panes"
+  exit 0
+fi
+
+# 釘選的 pane 不進挑選清單，連誤點的機會都不給
+candidate_rows=$(printf '%s\n' "$sorted_rows" | awk -F'\t' -v f="$PINNED_FIELD" '$f != 1')
+pinned_note=""
+[ -z "$pinned_panes" ] || pinned_note="釘選排除：${pinned_panes# }（改 ${EXCLUDE_FILE/#$HOME/~}）。"
+if [ -z "$candidate_rows" ]; then
+  echo "沒有可清理的 agent。${pinned_note}"
   exit 0
 fi
 
@@ -542,12 +590,12 @@ case "$p" in
   w*:p*) herdr pane read --source visible "$p" 2>/dev/null || echo "讀不到這個 pane 的畫面" ;;
   *) echo "herdr 之外的 process，沒有 pane 畫面" ;;
 esac'
-selected=$({ echo "$header_row"; printf '%s\n' "$sorted_rows"; } | fzf --multi --reverse \
+selected=$({ echo "$header_row"; printf '%s\n' "$candidate_rows"; } | fzf --multi --reverse \
   --delimiter=$'\t' --with-nth="$FIELDS_SHOWN" --header-lines=1 \
   --preview="$preview_cmd" --preview-window='down,50%,follow' --bind='ctrl-/:toggle-preview' \
   --header="TAB 勾選多個、Enter 清理所選、Esc 取消。閒置最久的排最上面；working 與備註有標記的還在做事，勾選前想清楚。
 herdr 列走 /exit，pane 留 stub 按 Enter 可復原；proc 列是 SIGTERM，要自己 claude --resume
-下方預覽窗是游標所在 pane 的目前畫面，Ctrl-/ 切換顯示") || {
+下方預覽窗是游標所在 pane 的目前畫面，Ctrl-/ 切換顯示。${pinned_note}") || {
   echo "取消，未清理任何 agent。"
   exit 0
 }
@@ -559,7 +607,7 @@ read -r ans
 
 napped=()
 sig_pids=""
-while IFS=$'\t' read -r src kind pane _status pid rss _idle _risk cwd _title _etime name session argv _idle_secs; do
+while IFS=$'\t' read -r src kind pane _status pid rss _idle _risk cwd _title _etime name session argv _idle_secs _pinned; do
   if [ "$src" = "herdr" ]; then
     # agent_not_running 代表 /exit 已生效、wait 撲空，視為成功
     out=$(herdr agent prompt "$pane" "/exit" --wait --until unknown --timeout 20000 2>&1) || true
