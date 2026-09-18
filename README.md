@@ -10,6 +10,8 @@
 
 [English](#english) | [繁體中文](#繁體中文)
 
+<img src="docs/screenshot.png" alt="herdr-nap picker: agents sorted by idle time with a preview of the highlighted pane" width="900">
+
 </div>
 
 ## English
