@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-18
+
 ### Added
 
 - 復原時重播原本的啟動旗標（例如 `--dangerously-skip-permissions`）。休眠紀錄 `napped.tsv` 新增第 6 欄 argv，舊的 5 欄紀錄相容。
@@ -27,6 +29,7 @@
 
 ### Docs
 
+- MIT 授權、README 改中英雙語並加 badge。
 - 記錄 herdr server 重啟後休眠 pane 的實際行為（agent 不會被拉起、pane id 不變、stub 消失），以及用具名 session 做隔離實驗的方法。
 
 ## 2026-08-24
