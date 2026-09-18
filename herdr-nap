@@ -338,7 +338,8 @@ prune_stale_records() {
   mv "$RESTORE_LOG.tmp" "$RESTORE_LOG"
 }
 
-# 以上全是函式定義，主流程從這裡開始
+# 以上全是函式。測試只載入函式：HERDR_NAP_LIB_ONLY=1 source herdr-nap
+if [ "${HERDR_NAP_LIB_ONLY:-}" = 1 ]; then return 0 2>/dev/null || exit 0; fi
 
 MODE=${1:-}
 case "$MODE" in

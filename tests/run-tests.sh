@@ -1,0 +1,234 @@
+#!/bin/bash
+# herdr-nap 純函式測試。不依賴 bats，macOS 內建 bash 3.2 直接跑：
+#   tests/run-tests.sh
+# 每個測試是一個 test_* 函式，名稱用 should_<行為>_when_<條件>。
+set -uo pipefail
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+export HERDR_NAP_LIB_ONLY=1
+# shellcheck source=../herdr-nap
+. "$HERE/../herdr-nap"
+set +e
+
+pass=0; fail=0
+assert_eq() {
+  local expected=$1 actual=$2 label=${3:-}
+  if [ "$expected" = "$actual" ]; then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1))
+    printf 'FAIL %s %s\n  預期: [%s]\n  實際: [%s]\n' "${FUNCNAME[1]}" "$label" "$expected" "$actual"
+  fi
+}
+
+# ---------- replay_flags ----------
+test_should_keep_boolean_flag_when_resume_has_no_value() {
+  assert_eq "--dangerously-skip-permissions" \
+    "$(replay_flags "claude --dangerously-skip-permissions --resume")"
+}
+test_should_drop_resume_value_when_it_is_a_session_name() {
+  assert_eq "--dangerously-skip-permissions" \
+    "$(replay_flags "claude --dangerously-skip-permissions --resume 91app-map-dashboard-dev-0909")"
+}
+test_should_return_empty_when_only_resume_uuid_given() {
+  assert_eq "" "$(replay_flags "claude --resume 50b047c7-9a04-46b6-b0b5-ca4a0a6bffda")"
+}
+test_should_return_empty_when_argv_is_bare_command() {
+  assert_eq "" "$(replay_flags "claude")"
+  assert_eq "" "$(replay_flags "")" "空字串"
+}
+test_should_keep_value_flags_and_drop_positional_prompt() {
+  assert_eq "--model opus --dangerously-skip-permissions" \
+    "$(replay_flags "/opt/homebrew/bin/claude -r abc --model opus --dangerously-skip-permissions fix the bug")"
+}
+test_should_drop_all_session_flags_when_mixed_forms_used() {
+  assert_eq "--permission-mode plan" \
+    "$(replay_flags "claude --resume=abc -c --fork-session --permission-mode plan")"
+  assert_eq "--model x" "$(replay_flags "claude --session-id=abc --teleport --from-pr 12 --model x")" "teleport/from-pr"
+}
+test_should_handle_grok_short_session_flag() {
+  assert_eq "--always-approve --model grok-4 --reasoning-effort high" \
+    "$(replay_flags "grok -s 01a0 --always-approve --model grok-4 --reasoning-effort high")"
+}
+test_should_drop_positional_after_boolean_flag() {
+  assert_eq "--dangerously-skip-permissions" \
+    "$(replay_flags "claude --dangerously-skip-permissions do something")"
+}
+test_should_not_glob_expand_tokens() {
+  local out
+  out=$(cd "$HERE" && replay_flags "claude --add-dir * --bg")
+  assert_eq "--add-dir * --bg" "$out"
+}
+test_should_keep_equals_form_value_flags() {
+  assert_eq "--model=opus --bg" "$(replay_flags "claude --model=opus --bg")"
+}
+test_should_treat_every_listed_boolean_flag_as_boolean() {
+  # 清單裡每一個旗標（含各行行尾那個）後面接的位置參數都要被丟掉
+  local flag
+  for flag in $BOOLEAN_FLAGS; do
+    assert_eq "$flag" "$(replay_flags "claude $flag 幫我修 bug")" "$flag"
+  done
+}
+test_should_not_leak_glob_setting_to_caller() {
+  local before after
+  before=$-; replay_flags "claude --add-dir * --bg" >/dev/null; after=$-
+  assert_eq "$before" "$after" default-state
+  set -f; replay_flags "claude --bg" >/dev/null
+  case $- in *f*) assert_eq 1 1 ;; *) assert_eq "f kept" "f dropped" ;; esac
+  set +f
+}
+
+# ---------- restore_hint ----------
+test_should_place_argv_before_resume_when_argv_present() {
+  assert_eq "herdr agent start rev --kind claude --pane w1:p1 -- --dangerously-skip-permissions --resume SID" \
+    "$(restore_hint w1:p1 claude rev SID "--dangerously-skip-permissions")"
+}
+test_should_omit_argv_when_empty() {
+  assert_eq "herdr agent start claude --kind claude --pane w1:p1 -- --resume SID" \
+    "$(restore_hint w1:p1 claude claude SID "")"
+}
+
+# ---------- sq ----------
+test_should_single_quote_plain_string() {
+  assert_eq "'abc'" "$(sq abc)"
+}
+test_should_escape_embedded_single_quote() {
+  assert_eq "'it'\\''s'" "$(sq "it's")"
+}
+test_should_keep_cjk_readable_when_quoting() {
+  assert_eq "'已休眠，釋放 100MB'" "$(sq "已休眠，釋放 100MB")"
+}
+test_should_round_trip_through_eval() {
+  local s="a b'c\$d\`e*?"
+  eval "local back=$(sq "$s")"
+  assert_eq "$s" "$back"
+}
+
+# ---------- record_line / 舊紀錄相容 ----------
+test_should_write_six_tab_fields() {
+  assert_eq $'w1:p1\tclaude\tname\tSID\t/tmp\t--bg' "$(record_line w1:p1 claude name SID /tmp --bg)"
+}
+test_should_read_old_five_field_record_with_empty_argv() {
+  local pane kind name session cwd argv
+  IFS=$'\t' read -r pane kind name session cwd argv <<< $'w1:p1\tclaude\tclaude\tSID\t/tmp'
+  assert_eq "/tmp" "$cwd" cwd
+  assert_eq "" "$argv" argv
+}
+test_should_merge_records_keeping_latest_per_pane() {
+  local old new merged
+  old=$(record_line w1:p1 claude claude OLD /a ""; record_line w2:p1 grok grok KEEP /b "")
+  new=$(record_line w1:p1 claude claude NEW /a --bg)
+  # 與主程式相同的合併方式：新批次的 pane 蓋掉舊的，其餘保留
+  merged=$( { awk -F'\t' 'NR == FNR { seen[$1]; next } !($1 in seen)' \
+    <(printf '%s\n' "$new") <(printf '%s\n' "$old"); printf '%s\n' "$new"; } )
+  assert_eq $'w2:p1\tgrok\tgrok\tKEEP\t/b\t\nw1:p1\tclaude\tclaude\tNEW\t/a\t--bg' "$merged"
+}
+
+# ---------- fmt_age / etime_to_secs ----------
+test_should_format_age_in_days_hours_minutes() {
+  assert_eq "12m" "$(fmt_age 750)" minutes
+  assert_eq "4h05m" "$(fmt_age $((4 * 3600 + 300)))" hours
+  assert_eq "3d2h" "$(fmt_age $((3 * 86400 + 2 * 3600 + 59)))" days
+  assert_eq "0m" "$(fmt_age 0)" zero
+}
+test_should_parse_every_etime_shape() {
+  assert_eq 754 "$(etime_to_secs 12:34)" mm:ss
+  assert_eq $((1 * 3600 + 2 * 60 + 3)) "$(etime_to_secs 01:02:03)" hh:mm:ss
+  assert_eq $((8 * 86400 + 19 * 3600 + 58 * 60 + 17)) "$(etime_to_secs 08-19:58:17)" dd-hh:mm:ss
+  assert_eq 9 "$(etime_to_secs 00:09)" leading-zero
+}
+
+# ---------- last_entry_epoch / latest_entry_epoch / tree_rss_of_pid ----------
+test_should_read_last_timestamp_not_mtime() {
+  local d; d=$(mktemp -d)
+  printf '%s\n' '{"type":"user","timestamp":"2026-09-15T05:07:56.546Z"}' \
+    '{"type":"ledger"}' '{"type":"ledger"}' > "$d/claude.jsonl"
+  touch "$d/claude.jsonl"   # mtime 是現在，timestamp 是 9/15，要以 timestamp 為準
+  assert_eq 1789448876 "$(last_entry_epoch "$d/claude.jsonl")" iso
+  printf '%s\n' '{"timestamp":1787735609}' > "$d/grok.jsonl"
+  assert_eq 1787735609 "$(last_entry_epoch "$d/grok.jsonl")" epoch-seconds
+  printf '%s\n' '{"timestamp":1787735609123}' > "$d/ms.jsonl"
+  assert_eq 1787735609 "$(last_entry_epoch "$d/ms.jsonl")" epoch-millis
+  printf '%s\n' '{"type":"ledger"}' > "$d/none.jsonl"
+  assert_eq "" "$(last_entry_epoch "$d/none.jsonl")" no-timestamp
+  assert_eq "" "$(last_entry_epoch "$d/missing")" missing
+  rm -rf "$d"
+}
+test_should_pick_newest_entry_across_files() {
+  local d; d=$(mktemp -d)
+  printf '%s\n' '{"timestamp":"2026-01-01T00:00:00Z"}' > "$d/old"
+  printf '%s\n' '{"timestamp":"2026-06-01T00:00:00Z"}' > "$d/new"
+  assert_eq "$(last_entry_epoch "$d/new")" "$(latest_entry_epoch "$d/old" "$d/missing" "$d/new")"
+  assert_eq "" "$(latest_entry_epoch "$d/missing")" all-missing
+  rm -rf "$d"
+}
+test_should_sum_descendant_rss_across_generations() {
+  PS_DUMP=$(mktemp)
+  printf '%s\n' \
+    '100 1 1000 01:00 claude' \
+    '200 100 300 00:30 node mcp' \
+    '300 200 50 00:10 sh -c x' \
+    '400 1 999 01:00 other' \
+    '500 400 20 00:10 unrelated' > "$PS_DUMP"
+  assert_eq "1350 2" "$(tree_rss_of_pid 100)" with-grandchild
+  assert_eq "1019 1" "$(tree_rss_of_pid 400)" sibling-tree
+  assert_eq "0 0" "$(tree_rss_of_pid 777)" unknown-root
+  rm -f "$PS_DUMP"
+}
+
+# ---------- risk_markers ----------
+test_should_mark_descendants_and_fresh_start() {
+  local now; now=$(date +%s)
+  assert_eq "子行程2,剛啟動,無對話紀錄" "$(risk_markers sid 02:00 2 "$now" - -)"
+  assert_eq "-" "$(risk_markers "" 01-00:00:00 0 "$now" - -)" nothing
+  assert_eq "-" "$(risk_markers sid 01-00:00:00 0 "$now" "$((now - 99999))" "$((now - 99999))")" old-subagent
+}
+test_should_mark_subagent_activity_when_recent() {
+  local now; now=$(date +%s)
+  assert_eq "subagent活動中" "$(risk_markers sid 01:00:00 0 "$now" "$((now - 60))" "$((now - 60))")"
+}
+test_should_scan_main_and_subagent_files_once_each() {
+  local real_home=$HOME tmp now; tmp=$(mktemp -d); now=$(date +%s)
+  HOME=$tmp
+  mkdir -p "$HOME/.claude/projects/-x/sid/subagents"
+  local recent; recent=$(TZ=UTC date -r "$((now - 60))" +%Y-%m-%dT%H:%M:%SZ)
+  printf '{"timestamp":"2026-09-01T00:00:00Z"}\n' > "$HOME/.claude/projects/-x/sid.jsonl"
+  printf '{"timestamp":"%s"}\n' "$recent" > "$HOME/.claude/projects/-x/sid/subagents/a.jsonl"
+  local main sub
+  read -r main sub <<< "$(session_epochs claude sid)"
+  assert_eq "$(last_entry_epoch "$HOME/.claude/projects/-x/sid.jsonl")" "$main" main
+  assert_eq $((now - 60)) "$sub" sub
+  assert_eq $((now - 60)) "$(max_epoch "$main" "$sub")" max
+  assert_eq "- -" "$(session_epochs claude nope)" missing-session
+  assert_eq "- -" "$(session_epochs claude "")" empty-session
+  assert_eq "" "$(max_epoch - -)" max-of-none
+  HOME=$real_home; rm -rf "$tmp"
+}
+test_should_not_abort_under_errexit_when_timestamp_unparseable() {
+  local d out; d=$(mktemp -d)
+  printf '%s\n' '{"timestamp":"2026-13-99T99:99:99Z"}' > "$d/bad.jsonl"
+  printf '%s\n' '{"timestamp":1787735609.5}' > "$d/float.jsonl"
+  printf '%s\n' '{"timestamp":1787735609123456}' > "$d/micro.jsonl"
+  out=$(set -e; v=$(last_entry_epoch "$d/bad.jsonl"); echo "ok[$v]")
+  assert_eq "ok[]" "$out" bad-iso
+  assert_eq 1787735609 "$(last_entry_epoch "$d/float.jsonl")" float-epoch
+  assert_eq 1787735609 "$(last_entry_epoch "$d/micro.jsonl")" micro-epoch
+  rm -rf "$d"
+}
+
+# ---------- stub_path ----------
+test_should_sanitize_pane_id_for_stub_filename() {
+  STUB_DIR=/s
+  assert_eq "/s/w1_pB.sh" "$(stub_path w1:pB)"
+}
+
+# ---------- is_boolean_flag ----------
+test_should_recognize_known_boolean_flags() {
+  is_boolean_flag --dangerously-skip-permissions; assert_eq 0 $? dsp
+  is_boolean_flag --model; assert_eq 1 $? model
+  is_boolean_flag --bg; assert_eq 0 $? bg
+}
+
+for t in $(declare -F | awk '$3 ~ /^test_/ { print $3 }'); do "$t"; done
+echo "通過 ${pass}、失敗 ${fail}"
+[ "$fail" -eq 0 ]

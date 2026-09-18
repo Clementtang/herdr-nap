@@ -33,6 +33,14 @@ git config core.hooksPath githooks
 
 `githooks/pre-commit` 會擋下 bash 腳本裡變數緊貼非 ASCII 字元的寫法（見下方實作要點最後一項）。
 
+測試（純函式，不依賴 bats，內建 bash 3.2 直接跑）：
+
+```
+tests/run-tests.sh
+```
+
+腳本用 `HERDR_NAP_LIB_ONLY=1 source herdr-nap` 只載入函式，主流程不會執行。測試涵蓋旗標重播、紀錄格式與合併、單引號包裝、閒置時間解析、子孫 RSS 加總與風險標記。
+
 ## herdr server 重啟後會怎樣（實測，2026-09-18）
 
 - herdr 的持久化檔 `~/.config/herdr/session.json` 對每個 pane 只存 cwd，pane 上有 agent 時才多存 `agent_session`。已休眠的 pane（不論 stub 待命中或已回 shell）沒有 `agent_session`。

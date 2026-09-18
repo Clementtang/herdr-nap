@@ -11,6 +11,7 @@
 - 清單新增「閒置」欄並依它排序，取對話紀錄最後一筆的 timestamp（不用檔案 mtime，Claude Code 會回頭改寫閒置 session 的檔案）。
 - 新增「備註」欄：子行程數、subagent 活動中、剛啟動、無對話紀錄。只標記不擋。
 - fzf 預覽窗顯示游標所在 pane 的目前畫面，Ctrl-/ 切換。
+- `tests/run-tests.sh`：92 個純函式測試，不依賴 bats。腳本支援 `HERDR_NAP_LIB_ONLY=1` 只載入函式。
 
 ### Changed
 
