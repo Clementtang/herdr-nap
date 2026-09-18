@@ -6,7 +6,12 @@
 
 ### Fixed
 
-- 在 herdr pane 裡但 herdr 尚未辨識成 agent 的 claude/grok（例如 stub resume 後卡在信任確認、或偵測延遲）不再被誤判成「herdr 之外」而列進 SIGTERM 清單。改以「祖先鏈是否含 herdr server」判斷，這種 process 改成在清單附註計數，不誤殺、不隱瞞。
+- 在 herdr pane 裡但 herdr 尚未辨識成 agent 的 claude/grok（例如 stub resume 後卡在信任確認、或偵測延遲）不再被誤判成「herdr 之外」而列進 SIGTERM 清單。改以「祖先鏈是否含 herdr server」判斷，這種 process 列成來源 `herdr?`、備註「herdr未辨識」，勾了也不動它。
+- `--list` 與確認清單裡空欄位會被 `column -t` 吞掉、後面欄位往前擠；顯示前補成 `-`。
+
+### Added
+
+- 前景是 `ssh`/`mosh` 的 pane 列成來源 `remote`（唯讀），提示 agent 在另一台機器上。
 
 ### Added
 

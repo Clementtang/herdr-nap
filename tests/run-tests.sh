@@ -280,6 +280,12 @@ test_should_mark_risks_in_english_when_selected() {
   NAP_LANG=zh
 }
 
+# ---------- fill_empty_fields ----------
+test_should_fill_empty_tsv_fields_with_dash() {
+  assert_eq $'a\t-\tc\t-' "$(printf 'a\t\tc\t\n' | fill_empty_fields)"
+  assert_eq $'x\ty' "$(printf 'x\ty\n' | fill_empty_fields)" untouched
+}
+
 # ---------- 釘選排除 ----------
 test_should_load_patterns_ignoring_comments_and_blank_lines() {
   local f; f=$(mktemp)

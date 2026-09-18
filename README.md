@@ -37,6 +37,7 @@ herdr-nap --restore  bring back every napped herdr agent
 - Agents for which herdr reports no session id are exited without a record or stub, and the tool says plainly that the conversation cannot be restored automatically.
 - claude / grok processes started outside herdr fall back to SIGTERM; `claude --resume` brings them back.
 - Safety: the tool's own pane is excluded, every nap is confirmed with y/N, each exit is verified and reported, records live in `~/.local/state/herdr-nap/napped.tsv`, stubs in `~/.local/state/herdr-nap/panes/`.
+- **Remote panes**: a pane whose foreground process is `ssh` or `mosh` is listed as source `remote`, read-only. The agent behind it lives on another machine, so neither the local herdr nor this tool can see or nap it; run `herdr-nap` on that machine instead.
 - `--list` is read-only. Dependency checks follow the mode, so `--list` and `--restore` work without fzf.
 - **Language**: messages are English unless `LC_ALL`, `LC_MESSAGES` or `LANG` starts with `zh`, which selects Traditional Chinese. `HERDR_NAP_LANG=en|zh` overrides. A stub keeps the language it was written in.
 
@@ -101,7 +102,7 @@ tests/run-tests.sh
 - **`herdr agent start`'s exit code does not tell whether restore worked**: when the agent stops at a prompt during startup (workspace trust, for example), herdr returns `agent_not_ready` at once even though the process is up. Success is judged by the session id reported in `herdr agent list`; blocked gets its own message.
 - **Testing the interactive mode without a TTY**: `FZF_DEFAULT_OPTS="--exact --filter=<pane>" herdr-nap <<< y` runs the full nap flow (fzf in filter mode does not need a terminal), handy for end-to-end tests on one pane.
 - Idle claude agents have no long-lived children (14 measured, zero descendants) and `/exit` leaves no orphaned MCP process, so the tool never kills a process tree. Descendant sums only affect the RSS column and the child-process marker.
-- **"Outside herdr" cannot be decided by `herdr agent list` alone**: a claude/grok can run inside a herdr pane while herdr has not registered it as an agent (a stub resumed into a trust prompt, a failed resume, or a detection lag). Every pane shell is a direct child of the `herdr server` process, so an in-pane agent has herdr server as an ancestor; a genuinely external one does not. The stray-process loop walks the ancestor chain and skips anything under herdr server, counting it in a footer note instead of offering it for SIGTERM.
+- **"Outside herdr" cannot be decided by `herdr agent list` alone**: a claude/grok can run inside a herdr pane while herdr has not registered it as an agent (a stub resumed into a trust prompt, a failed resume, or a detection lag). Every pane shell is a direct child of the `herdr server` process, so an in-pane agent has herdr server as an ancestor; a genuinely external one does not. The stray-process loop walks the ancestor chain: anything under herdr server is listed as source `herdr?` with the note `unregistered`, stays visible, and is left alone when picked (no /exit is possible, SIGTERM would destroy the pane's resume path).
 
 ### Known limitations
 
@@ -134,6 +135,7 @@ herdr-nap --restore  復原先前清理掉的 herdr agent
 - herdr 沒有回報 session id 的 agent，退出後不寫紀錄也不留 stub，並明講這個對話無法自動復原。
 - herdr 之外直開的 claude / grok 維持 SIGTERM fallback，`claude --resume` 可復原。
 - 防呆：排除自身 pane、清理前 y/N 確認、逐一驗證退出並回報、復原紀錄存 `~/.local/state/herdr-nap/napped.tsv`、stub 存 `~/.local/state/herdr-nap/panes/`。
+- **遠端 pane**：前景是 `ssh` 或 `mosh` 的 pane 列成來源 `remote`，唯讀。後面的 agent 在另一台機器上，本機的 herdr 與本工具都看不到也動不了，請到那台跑 `herdr-nap`。
 - `--list` 是唯讀模式，不動狀態檔；依賴檢查按 mode 做，沒裝 fzf 仍能 `--list` 與 `--restore`。
 - **語言**：`LC_ALL`、`LC_MESSAGES` 或 `LANG` 以 `zh` 開頭就顯示繁體中文，其餘一律英文；`HERDR_NAP_LANG=en|zh` 可強制。stub 的訊息在產生當下就固定語言。訊息集中在腳本的 `msg_zh` 與 `msg_en` 兩張表，測試會比對兩邊 key 一致。
 
@@ -198,7 +200,7 @@ tests/run-tests.sh
 - **`herdr agent start` 的退出碼不能當復原成敗**：agent 啟動時卡在確認畫面（例如工作區信任），herdr 立刻回 `agent_not_ready` 非零，但 process 已經起來。成敗一律以 `herdr agent list` 回報的 session id 為準，blocked 另外提示。
 - **非互動測試互動模式**：`FZF_DEFAULT_OPTS="--exact --filter=<pane>" herdr-nap <<< y` 會走完整的休眠流程（fzf 在 filter 模式不佔 TTY），適合對指定 pane 做端到端實測。
 - 閒置的 claude agent 底下沒有常駐子行程（14 個實測子孫數 0），`/exit` 後也沒有留下孤兒 MCP process，所以不做 kill 整棵樹。子行程加總只影響 RSS 顯示與「子行程N」標記。
-- **「herdr 之外」不能只看 `herdr agent list`**：claude/grok 可能人在 herdr pane 裡，herdr 卻沒把它辨識成 agent（stub resume 後卡在信任確認、resume 失敗、或偵測延遲）。每個 pane shell 都是 `herdr server` 的直屬子行程，所以 pane 內的 agent 祖先鏈一定含 herdr server，真正外部直開的則沒有。散裝 process 迴圈追祖先鏈，凡在 herdr server 底下的就跳過、只在清單附註計數，不列進 SIGTERM 清單。
+- **「herdr 之外」不能只看 `herdr agent list`**：claude/grok 可能人在 herdr pane 裡，herdr 卻沒把它辨識成 agent（stub resume 後卡在信任確認、resume 失敗、或偵測延遲）。每個 pane shell 都是 `herdr server` 的直屬子行程，所以 pane 內的 agent 祖先鏈一定含 herdr server，真正外部直開的則沒有。散裝 process 迴圈追祖先鏈，凡在 herdr server 底下的列成來源 `herdr?`、備註「herdr未辨識」，照樣看得到，勾了也不動它（無法 /exit，SIGTERM 會毀掉 pane 的復原路徑）。
 
 ### 已知限制
 

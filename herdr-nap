@@ -77,7 +77,10 @@ msg_zh() {
     manual_hint) printf '  可手動執行：%%s' ;;
     restore_done) printf '復原完成：成功 %%s、失敗 %%s。' ;;
     no_agents) printf '沒有可清理的 agent。%%s' ;;
-    unregistered_note) printf '（另有 %%s 個 pane 內的 agent，herdr 尚未辨識，未列入；到該 pane 查看或重跑）' ;;
+    mark_unregistered) printf 'herdr未辨識' ;;
+    mark_remote) printf '遠端' ;;
+    skip_unregistered) printf '%%s 在 herdr pane 裡但 herdr 沒辨識成 agent（resume 卡住或偵測延遲），工具不動它；到該 pane 查看，或稍後重跑。' ;;
+    skip_remote) printf '%%s 是遠端連線（%%s），agent 在另一台機器上，請到那台跑 herdr-nap。' ;;
     header_row) printf '來源\tAGENT\tPANE\t狀態\tPID\tRSS\t閒置\t備註\tCWD\t標題 / 指令' ;;
     pinned_note) printf '釘選排除：%%s（改 %%s）。' ;;
     preview_unreadable) printf '讀不到這個 pane 的畫面' ;;
@@ -129,7 +132,10 @@ msg_en() {
     manual_hint) printf '  Manual restore: %%s' ;;
     restore_done) printf 'Restore finished: %%s ok, %%s failed.' ;;
     no_agents) printf 'No agent to nap.%%s' ;;
-    unregistered_note) printf '(%%s in-pane agents herdr has not registered yet, not listed; check the pane or rerun)' ;;
+    mark_unregistered) printf 'unregistered' ;;
+    mark_remote) printf 'remote' ;;
+    skip_unregistered) printf '%%s runs inside a herdr pane but herdr has not registered it as an agent (stuck resume or detection lag); left alone. Check the pane or rerun later.' ;;
+    skip_remote) printf '%%s is a remote connection (%%s); the agent lives on another machine, run herdr-nap there.' ;;
     header_row) printf 'SRC\tAGENT\tPANE\tSTATUS\tPID\tRSS\tIDLE\tNOTES\tCWD\tTITLE / COMMAND' ;;
     pinned_note) printf 'Pinned, excluded: %%s (edit %%s).' ;;
     preview_unreadable) printf 'Cannot read this pane' ;;
@@ -175,6 +181,9 @@ is_pinned() {
   done <<< "$patterns"
   return 1
 }
+# column -t 會把空欄位吞掉、後面的欄位往前擠，顯示前把空欄位補成 -
+fill_empty_fields() { awk -F'\t' -v OFS='\t' '{ for (i = 1; i <= NF; i++) if ($i == "") $i = "-"; print }'; }
+
 # 把 --list 輸出裡釘選的列變灰（只在輸出到終端時）。參數：pinned pane 清單（空白分隔）
 dim_pinned_lines() {
   if [ -t 1 ] && [ -n "$1" ]; then
@@ -399,6 +408,21 @@ restore_hint() {
 }
 
 pane_exists() { herdr pane process-info --pane "$1" >/dev/null 2>&1; }
+
+# pane 的前景 process：輸出 "pid argv0"
+pane_foreground() {
+  herdr pane process-info --pane "$1" 2>/dev/null |
+    jq -r '.result.process_info.foreground_processes[0] | select(. != null) | "\(.pid) \(.argv0 // .name // "")"'
+}
+
+# 從 pane shell 的 pid 反查 pane id（只在少數未辨識的 process 上用，一個一個問）
+pane_of_shell_pid() {
+  local pane
+  while IFS= read -r pane; do
+    [ "$(pane_shell_pid "$pane")" = "$1" ] && { printf '%s' "$pane"; return 0; }
+  done < <(herdr pane list 2>/dev/null | jq -r '.result.panes[].pane_id')
+  return 0
+}
 
 pane_agent_status() {
   herdr agent list 2>/dev/null | jq -r --arg p "$1" \
@@ -662,7 +686,6 @@ is_ancestor() { case " $ancestors " in *" $1 "*) return 0 ;; esac; return 1; }
 rows=()
 herdr_pids=""
 pinned_panes=""
-unregistered=0
 now=$(date +%s)
 patterns=$(exclude_patterns "$EXCLUDE_FILE")
 # tab 標籤（side bar 顯示的名字）一次拉齊，釘選比對要用
@@ -700,22 +723,36 @@ while read -r pid _ppid rss etime args; do
   case "$argv0" in claude|grok) kind=$argv0 ;; *) continue ;; esac
   if is_ancestor "$pid"; then continue; fi
   case " $herdr_pids " in *" $pid "*) continue ;; esac
-  # 在 herdr pane 裡但 herdr 沒辨識成 agent：不當外部 process，只計數提示
-  if inside_herdr_tree "$pid"; then unregistered=$((unregistered + 1)); continue; fi
   cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
   read -r rss _desc_count <<< "$(tree_rss_of_pid "$pid")"
+  # 在 herdr pane 裡但 herdr 沒辨識成 agent（resume 卡在確認畫面、偵測延遲）：
+  # 照樣列出讓人看得到，但來源標 herdr?，勾了也不動它；找得到 pane 就標 pane
+  if inside_herdr_tree "$pid"; then
+    src="herdr?"; pane=$(pane_of_shell_pid "$_ppid"); risk=$(t mark_unregistered)
+  else
+    src=proc; pane=-; risk=-
+  fi
   # 散裝 process 沒有 session id 可查閒置，排序鍵給 -1 沉到最底
-  rows+=("$(printf '%s\t%s\t-\t-\t%s\t%s\t%s\t-\t%s\t%s\t%s\t-\t-\t-\t-1\t0' \
-    proc "$kind" "$pid" "$((rss / 1024))MB" "$(fmt_age "$(etime_to_secs "$etime")")" \
-    "${cwd/#$HOME/~}" "$(echo "$args" | cut -c1-50)" "$etime")")
+  rows+=("$(printf '%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t-\t-\t-1\t0' \
+    "$src" "$kind" "${pane:--}" "$pid" "$((rss / 1024))MB" "$(fmt_age "$(etime_to_secs "$etime")")" \
+    "$risk" "${cwd/#$HOME/~}" "$(echo "$args" | cut -c1-50)" "$etime")")
 done < "$PS_DUMP"
 
-# 在 herdr pane 裡但未被辨識的 agent 提示，--list 與 fzf 都附上
-unreg_note=""
-[ "$unregistered" -eq 0 ] || unreg_note=$(t unregistered_note "$unregistered")
+# 遠端連線的 pane（前景是 ssh / mosh）：agent 在另一台機器上，本機看不到也動不了，
+# 列出來只是讓清單完整，來源標 remote，勾了只提示
+while IFS=$'\t' read -r pane cwd title; do
+  [ "$pane" = "$self_pane" ] && continue
+  read -r fg_pid fg_cmd <<< "$(pane_foreground "$pane")"
+  case "${fg_cmd##*/}" in ssh|mosh|mosh-client) ;; *) continue ;; esac
+  etime=$(awk -v x="$fg_pid" '$1 == x { print $4; exit }' "$PS_DUMP")
+  rows+=("$(printf '%s\t%s\t%s\t-\t%s\t-\t%s\t%s\t%s\t%s\t%s\t-\t-\t-\t-1\t0' \
+    remote "${fg_cmd##*/}" "$pane" "$fg_pid" "$(fmt_age "$(etime_to_secs "${etime:-00:00}")")" \
+    "$(t mark_remote)" "${cwd/#$HOME/~}" "$title" "${etime:-00:00}")")
+done < <(herdr pane list 2>/dev/null | jq -r '.result.panes[] | select(.agent == null) |
+  [.pane_id, .cwd, .terminal_title_stripped // ""] | @tsv')
 
 if [ "${#rows[@]}" -eq 0 ]; then
-  echo "$(t no_agents "$unreg_note")"
+  echo "$(t no_agents "")"
   exit 0
 fi
 
@@ -723,9 +760,8 @@ header_row="$(t header_row)"$'\tUPTIME\tNAME\tSESSION\tARGV\tIDLE_SECS\tPINNED'
 # 閒置最久的排最上面，同秒數再依 pane 排，順序才穩定；RSS 是整棵 process 樹的合計
 sorted_rows=$(printf '%s\n' "${rows[@]}" | sort -t$'\t' -k"$IDLE_SORT_FIELD","$IDLE_SORT_FIELD"nr -k3,3)
 if [ "$MODE" = "--list" ]; then
-  { echo "$header_row"; printf '%s\n' "$sorted_rows"; } | cut -f"$FIELDS_SHOWN" | column -t -s$'\t' |
-    dim_pinned_lines "$pinned_panes"
-  [ -z "$unreg_note" ] || echo "$unreg_note"
+  { echo "$header_row"; printf '%s\n' "$sorted_rows"; } | cut -f"$FIELDS_SHOWN" | fill_empty_fields |
+    column -t -s$'\t' | dim_pinned_lines "$pinned_panes"
   exit 0
 fi
 
@@ -734,7 +770,7 @@ candidate_rows=$(printf '%s\n' "$sorted_rows" | awk -F'\t' -v f="$PINNED_FIELD" 
 pinned_note=""
 [ -z "$pinned_panes" ] || pinned_note=$(t pinned_note "${pinned_panes# }" "${EXCLUDE_FILE/#$HOME/~}")
 if [ -z "$candidate_rows" ]; then
-  echo "$(t no_agents "${pinned_note}${unreg_note}")"
+  echo "$(t no_agents "$pinned_note")"
   exit 0
 fi
 
@@ -748,12 +784,12 @@ esac'
 selected=$({ echo "$header_row"; printf '%s\n' "$candidate_rows"; } | fzf --multi --reverse \
   --delimiter=$'\t' --with-nth="$FIELDS_SHOWN" --header-lines=1 \
   --preview="$preview_cmd" --preview-window='down,50%,follow' --bind='ctrl-/:toggle-preview' \
-  --header="$(t fzf_header "${pinned_note}${unreg_note}")") || {
+  --header="$(t fzf_header "$pinned_note")") || {
   echo "$(t fzf_cancel)"
   exit 0
 }
 
-echo "$selected" | cut -f"$FIELDS_SHOWN" | column -t -s$'\t'
+echo "$selected" | cut -f"$FIELDS_SHOWN" | fill_empty_fields | column -t -s$'\t'
 t nap_confirm "$(echo "$selected" | wc -l | tr -d ' ')"
 read -r ans
 [ "$ans" != "y" ] && [ "$ans" != "Y" ] && { echo "$(t cancelled)"; exit 0; }
@@ -777,6 +813,10 @@ while IFS=$'\t' read -r src kind pane _status pid rss _idle _risk cwd title _eti
       echo "$(t napped "$pane" "$kind" "${argv:+$(t napped_argv "$argv")}")"
       napped+=("$(record_line "$pane" "$kind" "$name" "$session" "$cwd" "$argv")")
     fi
+  elif [ "$src" = "herdr?" ]; then
+    echo "$(t skip_unregistered "${pane}${pane:+ }PID $pid")"
+  elif [ "$src" = "remote" ]; then
+    echo "$(t skip_remote "$pane" "$title")"
   else
     sig_pids="$sig_pids $pid"
     kill "$pid" 2>/dev/null || true
