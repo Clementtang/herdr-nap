@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Docs
+
+- README 精簡成安裝、用法、限制；實測數據、實作要點、開發設定原文搬到 `docs/internals.md`。
+
 ## [0.2.1] - 2026-09-19
 
 ### Fixed
