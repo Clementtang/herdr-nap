@@ -14,10 +14,15 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-nap"
 RESTORE_LOG="$STATE_DIR/napped.tsv"
 STUB_DIR="$STATE_DIR/panes"
 
-# 資料列全程 TSV：src kind pane status pid rss etime name session cwd title argv
-# fzf 用 --with-nth 隱藏 name / session / argv；欄位不做 pad，之後要拿去打 herdr
-# 的值保持原樣，對齊交給顯示層（--list 用 column -t、fzf 靠 tabstop）
-FIELDS_SHOWN='1,2,3,4,5,6,7,10,11'
+# 資料列全程 TSV，顯示的欄位排前面（cut 只會照升冪輸出，顯示順序就是欄位順序）：
+#   1 src 2 kind 3 pane 4 status 5 pid 6 rss 7 idle 8 risk 9 cwd 10 title
+#   11 etime 12 name 13 session 14 argv 15 idle_secs
+# 欄位不做 pad，之後要拿去打 herdr 的值保持原樣，對齊交給顯示層（--list 用
+# column -t、fzf 靠 tabstop）。fzf 預覽窗用 {3} 取 pane，動欄位順序時要一起改。
+FIELDS_SHOWN='1-10'
+IDLE_SORT_FIELD=15
+SUBAGENT_ACTIVE_WINDOW=600   # 秒。subagent 紀錄在這段時間內更新過就標記
+JUST_STARTED_WINDOW=300      # 秒。剛啟動或剛復原的 agent 標記出來
 
 need() { command -v "$1" >/dev/null || { echo "找不到 $1 指令。" >&2; exit 1; }; }
 
@@ -44,6 +49,122 @@ agent_row_of_pane() {
 }
 
 agent_pid_of_pane() { agent_row_of_pane "$1" "$2" | awk '{print $1}'; }
+
+# 整棵 process 樹（root 加上所有子孫）的 RSS 合計與子孫數，輸出 "total_kb desc_count"。
+# agent 本體的 RSS 不含 MCP server 與工具起的子行程，只看本體會低估。
+tree_rss_of_pid() {
+  awk -v root="$1" '
+    { pid[NR] = $1; ppid[NR] = $2; rss[NR] = $3 }
+    END {
+      inset[root] = 1; total = 0; cnt = 0; changed = 1
+      while (changed) {
+        changed = 0
+        for (i = 1; i <= NR; i++)
+          if (!(pid[i] in inset) && (ppid[i] in inset)) {
+            inset[pid[i]] = 1; total += rss[i]; cnt++; changed = 1
+          }
+      }
+      for (i = 1; i <= NR; i++) if (pid[i] == root) total += rss[i]
+      print total, cnt
+    }' "$PS_DUMP"
+}
+
+# 對話紀錄檔最後一筆的 timestamp 轉 epoch。不用檔案 mtime：Claude Code 會回頭
+# 改寫閒置 session 的 jsonl（實測最後訊息 9/15 的檔案 mtime 是 9/18），mtime
+# 只能反映檔案被碰過，反映不了對話。claude 的 timestamp 是 ISO 8601 UTC，
+# grok 的是 epoch 秒；尾端可能有幾行沒 timestamp 的帳目列，所以多看幾行取最大。
+ACTIVITY_TAIL_LINES=50
+last_entry_epoch() {
+  local ts
+  [ -f "$1" ] || return 0
+  ts=$(tail -n "$ACTIVITY_TAIL_LINES" "$1" |
+    jq -r 'select(type == "object" and .timestamp != null) | .timestamp' 2>/dev/null |
+    sort | tail -1)
+  case "$ts" in
+    "") return 0 ;;
+    *T*) TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' "${ts%%.*}" +%s 2>/dev/null || return 0 ;;
+    *)
+      # 數字型：可能帶小數、可能是毫秒或微秒，砍到 10 位秒數
+      ts=${ts%%.*}
+      while [ "${#ts}" -gt 10 ]; do ts=${ts%???}; done
+      case "$ts" in *[!0-9]*|"") return 0 ;; esac
+      printf '%s' "$ts" ;;
+  esac
+}
+
+# 一組紀錄檔裡最新的最後一筆時間（epoch）；沒有任何檔案就輸出空字串
+latest_entry_epoch() {
+  local f e best=""
+  for f; do
+    e=$(last_entry_epoch "$f")
+    [ -n "$e" ] || continue
+    if [ -z "$best" ] || [ "$e" -gt "$best" ]; then best=$e; fi
+  done
+  printf '%s' "$best"
+}
+
+# session 對話紀錄檔。用 session id 直接 glob，不必知道各家對 cwd 的編碼規則
+# （claude 把 / 換成 -，grok 走 percent-encoding 且 worktree session 會存在
+# 另一個 cwd 底下）。
+session_files() {
+  case "$1" in
+    claude) printf '%s\n' "$HOME"/.claude/projects/*/"$2".jsonl ;;
+    grok) printf '%s\n' "$HOME"/.grok/sessions/*/"$2"/updates.jsonl ;;
+  esac
+}
+subagent_files() {
+  [ "$1" = claude ] && printf '%s\n' "$HOME"/.claude/projects/*/"$2"/subagents/*.jsonl
+  return 0
+}
+# 主 session 檔與 subagent 檔各掃一次，輸出 "main_epoch sub_epoch"（沒有的用 - 佔位）；
+# 呼叫端自己取最大值當活動時間，subagent 那個另外拿去做標記，不重複掃檔
+session_epochs() {
+  local main="" sub=""
+  if [ -n "$2" ]; then
+    main=$(latest_entry_epoch $(session_files "$1" "$2"))
+    sub=$(latest_entry_epoch $(subagent_files "$1" "$2"))
+  fi
+  printf '%s %s' "${main:--}" "${sub:--}"
+}
+max_epoch() {
+  local best="" e
+  for e; do
+    [ "$e" != - ] || continue
+    if [ -z "$best" ] || [ "$e" -gt "$best" ]; then best=$e; fi
+  done
+  printf '%s' "$best"
+}
+
+# 秒數轉成 3d2h / 4h05m / 12m 這種短格式
+fmt_age() {
+  local s=$1
+  if [ "$s" -ge 86400 ]; then printf '%dd%dh' $((s / 86400)) $((s % 86400 / 3600))
+  elif [ "$s" -ge 3600 ]; then printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60))
+  else printf '%dm' $((s / 60)); fi
+}
+
+# ps 的 etime（[[dd-]hh:]mm:ss）轉秒
+etime_to_secs() {
+  local e=$1 d=0 h=0 m s
+  case "$e" in *-*) d=${e%%-*}; e=${e#*-} ;; esac
+  case "$e" in *:*:*) h=${e%%:*}; e=${e#*:} ;; esac
+  m=${e%%:*}; s=${e#*:}
+  echo $((10#$d * 86400 + 10#$h * 3600 + 10#$m * 60 + 10#$s))
+}
+
+# 挑選時的風險標記，逗號串接；沒有就輸出 -
+# 參數：session etime desc_count now activity_epoch sub_epoch（後兩個沒有時給 -）
+risk_markers() {
+  local session=$1 etime=$2 desc_count=$3 now=$4 activity=$5 sub_epoch=$6 out=""
+  [ "$desc_count" -gt 0 ] && out="$out,子行程${desc_count}"
+  if [ "$sub_epoch" != - ] && [ $((now - sub_epoch)) -lt "$SUBAGENT_ACTIVE_WINDOW" ]; then
+    out="$out,subagent活動中"
+  fi
+  [ "$(etime_to_secs "$etime")" -lt "$JUST_STARTED_WINDOW" ] && out="$out,剛啟動"
+  [ -n "$session" ] && [ "$activity" = - ] && out="$out,無對話紀錄"
+  printf '%s' "${out:+${out#,}}"
+  [ -n "$out" ] || printf '%s' -
+}
 
 # 從 ps 的 args 取出復原時要重播的旗標。去掉 argv0、所有指定或接續 session 的
 # 旗標（復原時另外接 --resume <session>）以及裸位置參數（多半是啟動時的
@@ -340,16 +461,24 @@ is_ancestor() { case " $ancestors " in *" $1 "*) return 0 ;; esac; return 1; }
 
 rows=()
 herdr_pids=""
+now=$(date +%s)
 while IFS=$'\t' read -r kind pane status name session cwd title; do
   [ "$pane" = "$self_pane" ] && continue
-  read -r pid rss etime args <<< "$(agent_row_of_pane "$pane" "$kind")"
+  read -r pid _rss etime args <<< "$(agent_row_of_pane "$pane" "$kind")"
   [ -n "${pid:-}" ] || continue
   if is_ancestor "$pid"; then continue; fi
   herdr_pids="$herdr_pids $pid"
   [ -n "$name" ] || name=$kind
-  rows+=("$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
-    herdr "$kind" "$pane" "$status" "$pid" "$((rss / 1024))MB" "$etime" \
-    "$name" "$session" "${cwd/#$HOME/~}" "$title" "$(replay_flags "$args")")")
+  read -r rss desc_count <<< "$(tree_rss_of_pid "$pid")"
+  # 閒置 = 對話紀錄最後一筆到現在；沒有紀錄就退回 process 年齡
+  read -r main_epoch sub_epoch <<< "$(session_epochs "$kind" "$session")"
+  activity=$(max_epoch "$main_epoch" "$sub_epoch")
+  if [ -n "$activity" ]; then idle_secs=$((now - activity)); else idle_secs=$(etime_to_secs "$etime"); fi
+  [ "$idle_secs" -ge 0 ] || idle_secs=0
+  rows+=("$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+    herdr "$kind" "$pane" "$status" "$pid" "$((rss / 1024))MB" "$(fmt_age "$idle_secs")" \
+    "$(risk_markers "$session" "$etime" "$desc_count" "$now" "${activity:--}" "$sub_epoch")" \
+    "${cwd/#$HOME/~}" "$title" "$etime" "$name" "$session" "$(replay_flags "$args")" "$idle_secs")")
 done < <(herdr agent list | jq -r '.result.agents[] |
   [.agent, .pane_id, .agent_status, .name // .agent, .agent_session.value // "",
    .cwd, .terminal_title_stripped] | @tsv')
@@ -362,9 +491,11 @@ while read -r pid _ppid rss etime args; do
   if is_ancestor "$pid"; then continue; fi
   case " $herdr_pids " in *" $pid "*) continue ;; esac
   cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
-  rows+=("$(printf '%s\t%s\t-\t-\t%s\t%s\t%s\t-\t-\t%s\t%s\t-' \
-    proc "$kind" "$pid" "$((rss / 1024))MB" "$etime" "${cwd/#$HOME/~}" \
-    "$(echo "$args" | cut -c1-50)")")
+  read -r rss _desc_count <<< "$(tree_rss_of_pid "$pid")"
+  # 散裝 process 沒有 session id 可查閒置，排序鍵給 -1 沉到最底
+  rows+=("$(printf '%s\t%s\t-\t-\t%s\t%s\t%s\t-\t%s\t%s\t%s\t-\t-\t-\t-1' \
+    proc "$kind" "$pid" "$((rss / 1024))MB" "$(fmt_age "$(etime_to_secs "$etime")")" \
+    "${cwd/#$HOME/~}" "$(echo "$args" | cut -c1-50)" "$etime")")
 done < "$PS_DUMP"
 
 if [ "${#rows[@]}" -eq 0 ]; then
@@ -372,16 +503,27 @@ if [ "${#rows[@]}" -eq 0 ]; then
   exit 0
 fi
 
-header_row=$'來源\tAGENT\tPANE\t狀態\tPID\tRSS\tUPTIME\tNAME\tSESSION\tCWD\t標題 / 指令\tARGV'
+header_row=$'來源\tAGENT\tPANE\t狀態\tPID\tRSS\t閒置\t備註\tCWD\t標題 / 指令\tUPTIME\tNAME\tSESSION\tARGV\tIDLE_SECS'
+# 閒置最久的排最上面，同秒數再依 pane 排，順序才穩定；RSS 是整棵 process 樹的合計
+sorted_rows=$(printf '%s\n' "${rows[@]}" | sort -t$'\t' -k"$IDLE_SORT_FIELD","$IDLE_SORT_FIELD"nr -k3,3)
 if [ "$MODE" = "--list" ]; then
-  { echo "$header_row"; printf '%s\n' "${rows[@]}"; } | cut -f"$FIELDS_SHOWN" | column -t -s$'\t'
+  { echo "$header_row"; printf '%s\n' "$sorted_rows"; } | cut -f"$FIELDS_SHOWN" | column -t -s$'\t'
   exit 0
 fi
 
-selected=$({ echo "$header_row"; printf '%s\n' "${rows[@]}"; } | fzf --multi --reverse \
+# 預覽窗顯示游標所在 pane 的目前畫面，勾選前先看得到它在做什麼。
+# {3} 是 PANE 欄；fzf 依 delimiter 切欄位時可能帶著尾端的 tab，先清掉空白。
+preview_cmd='p=$(printf %s {3} | tr -d "[:space:]")
+case "$p" in
+  w*:p*) herdr pane read --source visible "$p" 2>/dev/null || echo "讀不到這個 pane 的畫面" ;;
+  *) echo "herdr 之外的 process，沒有 pane 畫面" ;;
+esac'
+selected=$({ echo "$header_row"; printf '%s\n' "$sorted_rows"; } | fzf --multi --reverse \
   --delimiter=$'\t' --with-nth="$FIELDS_SHOWN" --header-lines=1 \
-  --header="TAB 勾選多個、Enter 清理所選、Esc 取消。working 狀態的 agent 還在做事，勾選前想清楚。
-herdr 列走 /exit，pane 留 stub 按 Enter 可復原；proc 列是 SIGTERM，要自己 claude --resume") || {
+  --preview="$preview_cmd" --preview-window='down,50%,follow' --bind='ctrl-/:toggle-preview' \
+  --header="TAB 勾選多個、Enter 清理所選、Esc 取消。閒置最久的排最上面；working 與備註有標記的還在做事，勾選前想清楚。
+herdr 列走 /exit，pane 留 stub 按 Enter 可復原；proc 列是 SIGTERM，要自己 claude --resume
+下方預覽窗是游標所在 pane 的目前畫面，Ctrl-/ 切換顯示") || {
   echo "取消，未清理任何 agent。"
   exit 0
 }
@@ -393,7 +535,7 @@ read -r ans
 
 napped=()
 sig_pids=""
-while IFS=$'\t' read -r src kind pane _status pid rss _etime name session cwd _title argv; do
+while IFS=$'\t' read -r src kind pane _status pid rss _idle _risk cwd _title _etime name session argv _idle_secs; do
   if [ "$src" = "herdr" ]; then
     # agent_not_running 代表 /exit 已生效、wait 撲空，視為成功
     out=$(herdr agent prompt "$pane" "/exit" --wait --until unknown --timeout 20000 2>&1) || true

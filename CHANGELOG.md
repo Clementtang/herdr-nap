@@ -8,6 +8,13 @@
 
 - 復原時重播原本的啟動旗標（例如 `--dangerously-skip-permissions`）。休眠紀錄 `napped.tsv` 新增第 6 欄 argv，舊的 5 欄紀錄相容。
 - `--restore` 遇到 pane 已不存在的紀錄時明講，並給出開新 pane 復原的指令；紀錄保留。
+- 清單新增「閒置」欄並依它排序，取對話紀錄最後一筆的 timestamp（不用檔案 mtime，Claude Code 會回頭改寫閒置 session 的檔案）。
+- 新增「備註」欄：子行程數、subagent 活動中、剛啟動、無對話紀錄。只標記不擋。
+- fzf 預覽窗顯示游標所在 pane 的目前畫面，Ctrl-/ 切換。
+
+### Changed
+
+- RSS 改為整棵 process 樹（agent 本體加所有子孫）的合計，stub 橫幅的「釋放」數字一併修正。
 
 ### Docs
 

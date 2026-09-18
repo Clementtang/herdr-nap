@@ -10,6 +10,8 @@ herdr-nap --list     只列出，不清理
 herdr-nap --restore  復原先前清理掉的 herdr agent
 ```
 
+- 清單依**閒置時間**排序，閒置最久的在最上面。閒置取對話紀錄最後一筆的 timestamp（claude 讀 `~/.claude/projects/*/<session>.jsonl` 與其 `subagents/*.jsonl`，grok 讀 `~/.grok/sessions/*/<session>/updates.jsonl`），不是 process 年齡，resume 過的舊 session 不會顯示成很新。RSS 是整棵 process 樹（含 MCP 與工具子行程）的合計。備註欄標記「子行程N」「subagent活動中」「剛啟動」「無對話紀錄」，只標記不擋。
+- fzf 下方有預覽窗，顯示游標所在 pane 的目前畫面（`herdr pane read --source visible`），Ctrl-/ 切換。
 - herdr 管的 agent（claude、grok 等）走 `herdr agent prompt <pane> /exit` 請它自行退出：process 結束、pane 保留、herdr 狀態同步。已實測 claude 與 grok 都吃 `/exit`。
 - 休眠後 pane 裡會留一個待命 stub，顯示釋放了多少記憶體與 session id，**按 Enter 就地復原**、Ctrl-C 回到一般 shell。整批復原走 `--restore`，對 stub 待命中的 pane 送 Enter，對已回到 shell prompt 的 pane 走 `herdr agent start <name> --kind <kind> --pane <pane> -- <原啟動旗標> --resume <session-id>`。兩條路都不遺失對話。
 - **復原時帶回原本的啟動旗標**（例如 `--dangerously-skip-permissions`、`--model`）。休眠時從 ps 取 agent 的 argv，去掉 `--resume`/`-r`/`-c`/`--session-id`/`--fork-session` 這類接續 session 的旗標與裸位置參數（多半是啟動 prompt，重播會被當成新訊息），其餘存進紀錄第 6 欄。舊的 5 欄紀錄照常可讀，argv 視為空。
@@ -58,6 +60,10 @@ git config core.hooksPath githooks
 - **整份 `ps` 只拍一次快照**，找直屬子 process、RSS、etime、散裝行程都從同一份用 awk 取；需要當下狀態時（送出 `/exit` 或 resume 之後）再明確 refresh。先前每個 pane 掃一次全表，20 個 agent 就是 20 次。
 - **bash 3.2 的 pipeline 裡 `while` 跑在 subshell**，裡面的 `return` 不會從函式返回，只會結束 subshell。helper 不要寫成 `ps | while ... return`。
 - **ps 的 argv 看不到原本的引號**，含空白的旗標值拆成多個 token 後只會留第一個；裸位置參數一律丟掉，布林旗標後面跟著的位置參數也丟（靠已知布林旗標清單判斷，清單以空白或換行分隔，比對時兩種都要吃）。重播 argv 時要關 globbing，`--add-dir *` 這種值才不會被展開成檔名。
+- **對話紀錄 jsonl 的 mtime 不能當閒置依據**：Claude Code 會回頭改寫閒置 session 的檔案（實測最後訊息 9/15 的檔案 mtime 是 9/18），全部 agent 都會顯示成幾十分鐘內活動過。要讀最後幾行裡最大的 `timestamp`（claude 是 ISO 8601 UTC，grok 是 epoch 秒），尾端可能有幾行沒 timestamp 的帳目列。
+- **session 檔用 session id 直接 glob**，不要自己推 cwd 的編碼：claude 把 `/` 換成 `-`，grok 走 percent-encoding，而且 grok 的 code-review session 存在 `~/.grok/worktrees/...` 的編碼底下，跟 herdr 回報的 cwd 對不上。uuid 唯一，glob 一次就到。
+- **`cut -f` 只會照升冪輸出欄位**，顯示順序就是資料欄順序，所以要顯示的欄位排前面、隱藏欄排後面；fzf 預覽窗用 `{3}` 取 pane，動欄位順序時要一起改。
+- 閒置的 claude agent 底下沒有常駐子行程（14 個實測子孫數 0），`/exit` 後也沒有留下孤兒 MCP process，所以不做 kill 整棵樹。子行程加總只影響 RSS 顯示與「子行程N」標記。
 
 ## 已知限制
 
