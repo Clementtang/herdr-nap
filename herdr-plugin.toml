@@ -8,7 +8,7 @@
 
 id = "clementtang.herdr-nap"
 name = "Herdr Nap"
-version = "0.2.0"
+version = "0.2.1"
 min_herdr_version = "0.9.0"
 description = "手動挑選閒置 agent 送 /exit 休眠釋放記憶體，pane 留 stub 按 Enter 就地復原。"
 platforms = ["macos", "linux"]
