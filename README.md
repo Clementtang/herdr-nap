@@ -14,7 +14,7 @@ herdr-nap --restore  復原先前清理掉的 herdr agent
 - fzf 下方有預覽窗，顯示游標所在 pane 的目前畫面（`herdr pane read --source visible`），Ctrl-/ 切換。
 - **釘選排除**：`~/.config/herdr-nap/exclude` 一行一個字樣（`#` 開頭是註解），pane 標題或 tab 標籤含該字樣的 agent 不進 fzf 清單，連誤點的機會都沒有；`--list` 仍列出，備註標「釘選」並灰顯（輸出到終端時才上色）。用字樣不用 pane id 或 tab id，因為 id 在 workspace 關開後會變。
 - herdr 管的 agent（claude、grok 等）走 `herdr agent prompt <pane> /exit` 請它自行退出：process 結束、pane 保留、herdr 狀態同步。已實測 claude 與 grok 都吃 `/exit`。
-- 休眠後 pane 裡會留一個待命 stub，顯示釋放了多少記憶體與 session id，**按 Enter 就地復原**、Ctrl-C 回到一般 shell。整批復原走 `--restore`，對 stub 待命中的 pane 送 Enter，對已回到 shell prompt 的 pane 走 `herdr agent start <name> --kind <kind> --pane <pane> -- <原啟動旗標> --resume <session-id>`。兩條路都不遺失對話。
+- 休眠後 pane 裡會留一個待命 stub，顯示釋放了多少記憶體與 session id，**按 Enter 就地復原**、Ctrl-C 回到一般 shell。stub 待命時把終端標題設成 `[nap] 原標題`，側欄一眼看出哪些睡著、睡著的是誰；用的是 OSC 標題跳脫序列而不是 `herdr tab rename`，agent 復原或回到 shell 時標題自然被蓋掉，不需要清理。整批復原走 `--restore`，對 stub 待命中的 pane 送 Enter，對已回到 shell prompt 的 pane 走 `herdr agent start <name> --kind <kind> --pane <pane> -- <原啟動旗標> --resume <session-id>`。兩條路都不遺失對話。
 - **復原時帶回原本的啟動旗標**（例如 `--dangerously-skip-permissions`、`--model`）。休眠時從 ps 取 agent 的 argv，去掉 `--resume`/`-r`/`-c`/`--session-id`/`--fork-session` 這類接續 session 的旗標與裸位置參數（多半是啟動 prompt，重播會被當成新訊息），其餘存進紀錄第 6 欄。舊的 5 欄紀錄照常可讀，argv 視為空。
 - pane 已經被關掉（或整個 workspace 沒了）的紀錄，`--restore` 會明講「已不存在」並給開新 pane 復原的指令，紀錄保留。
 - 復原不一定全自動：實測 `claude --dangerously-skip-permissions --resume` 起來後會先跳「工作區信任」確認畫面，herdr 回報 blocked。兩條復原路徑都會偵測這個狀態並提示到該 pane 回答，紀錄保留到 session 真的回來為止。工具不會替你回答任何確認畫面。
@@ -82,6 +82,7 @@ tests/run-tests.sh
 - **對話紀錄 jsonl 的 mtime 不能當閒置依據**：Claude Code 會回頭改寫閒置 session 的檔案（實測最後訊息 9/15 的檔案 mtime 是 9/18），全部 agent 都會顯示成幾十分鐘內活動過。要讀最後幾行裡最大的 `timestamp`（claude 是 ISO 8601 UTC，grok 是 epoch 秒），尾端可能有幾行沒 timestamp 的帳目列。
 - **session 檔用 session id 直接 glob**，不要自己推 cwd 的編碼：claude 把 `/` 換成 `-`，grok 走 percent-encoding，而且 grok 的 code-review session 存在 `~/.grok/worktrees/...` 的編碼底下，跟 herdr 回報的 cwd 對不上。uuid 唯一，glob 一次就到。
 - **`cut -f` 只會照升冪輸出欄位**，顯示順序就是資料欄順序，所以要顯示的欄位排前面、隱藏欄排後面；fzf 預覽窗用 `{3}` 取 pane，動欄位順序時要一起改。同一個欄位清單同時餵 `cut -f` 與 fzf `--with-nth`，只能用逗號列舉，cut 的 `1-10` fzf 不認（互動模式會直接失敗，`--list` 看不出來）。測試用 `fzf --filter` 非互動驗證這個表達式。
+- **herdr 吃 pane 送出的 OSC 0 標題**（實測 `printf '\033]0;...\007'` 後 `herdr pane list` 的 `terminal_title` 跟著變）。但 zsh 每次回到 prompt 都會重設標題，所以只有停留在前景的 process 設的標題留得住；stub 一直卡在 `read` 上，剛好符合。
 - **`herdr agent start` 的退出碼不能當復原成敗**：agent 啟動時卡在確認畫面（例如工作區信任），herdr 立刻回 `agent_not_ready` 非零，但 process 已經起來。成敗一律以 `herdr agent list` 回報的 session id 為準，blocked 另外提示。
 - **非互動測試互動模式**：`FZF_DEFAULT_OPTS="--exact --filter=<pane>" herdr-nap <<< y` 會走完整的休眠流程（fzf 在 filter 模式不佔 TTY），適合對指定 pane 做端到端實測。
 - 閒置的 claude agent 底下沒有常駐子行程（14 個實測子孫數 0），`/exit` 後也沒有留下孤兒 MCP process，所以不做 kill 整棵樹。子行程加總只影響 RSS 顯示與「子行程N」標記。

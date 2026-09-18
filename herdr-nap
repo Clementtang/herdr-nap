@@ -336,10 +336,14 @@ sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # 「pane shell 的直屬子 process」這個位置；若讓 stub 取代 pane shell，resume
 # 出來的 agent 就是 pane shell 本身，下次清理會把整個 pane 一起收掉。
 write_and_arm_stub() {
-  local pane=$1 kind=$2 name=$3 session=$4 cwd=$5 freed=$6 argv=$7
-  local path tmp q_hint q_cwd q_session q_banner q_sub q_argv="" tok
+  local pane=$1 kind=$2 name=$3 session=$4 cwd=$5 freed=$6 argv=$7 title=$8
+  local path tmp q_hint q_cwd q_session q_banner q_sub q_title q_argv="" tok
   path=$(stub_path "$pane"); tmp="$path.tmp"
   [ -n "$cwd" ] || cwd=$HOME
+  # 待命時把終端標題設成「[nap] 原標題」，側欄一眼看出睡著的是誰。用 OSC 跳脫
+  # 序列不用 herdr tab rename：agent 復原後自己會蓋掉標題，回到 shell 時 prompt
+  # 也會重設，不需要任何清理，herdr 重啟 stub 消失時標題也跟著消失。
+  q_title=$(sq "[nap] ${title:-$kind}")
   q_hint=$(sq "$(restore_hint "$pane" "$kind" "$name" "$session" "$argv")")
   # 重播的旗標逐個包單引號，寫進 stub 後不會被 glob 或再次展開
   glob_off; for tok in $argv; do q_argv="$q_argv $(sq "$tok")"; done; glob_restore
@@ -361,6 +365,7 @@ _bye() {
 trap _bye INT
 stty sane 2>/dev/null || true
 cd ${q_cwd} 2>/dev/null || cd "\$HOME" || exit 0
+printf '\033]0;%s\007' ${q_title}
 printf '\n\033[1;35m%s\033[0m\n' ${q_banner}
 printf '\033[2m%s\033[0m\n\n' ${q_sub}
 IFS= read -r _ || exit 0
@@ -611,7 +616,7 @@ read -r ans
 
 napped=()
 sig_pids=""
-while IFS=$'\t' read -r src kind pane _status pid rss _idle _risk cwd _title _etime name session argv _idle_secs _pinned; do
+while IFS=$'\t' read -r src kind pane _status pid rss _idle _risk cwd title _etime name session argv _idle_secs _pinned; do
   if [ "$src" = "herdr" ]; then
     # agent_not_running 代表 /exit 已生效、wait 撲空，視為成功
     out=$(herdr agent prompt "$pane" "/exit" --wait --until unknown --timeout 20000 2>&1) || true
@@ -624,7 +629,7 @@ while IFS=$'\t' read -r src kind pane _status pid rss _idle _risk cwd _title _et
       echo "$pane $kind 已退出，但 herdr 沒有回報 session id，這個對話無法自動復原。"
     else
       cwd="${cwd/#\~/$HOME}"
-      write_and_arm_stub "$pane" "$kind" "$name" "$session" "$cwd" "$rss" "$argv"
+      write_and_arm_stub "$pane" "$kind" "$name" "$session" "$cwd" "$rss" "$argv" "$title"
       echo "$pane $kind 已休眠（pane 保留，按 Enter 即可復原${argv:+，復原時帶回 ${argv}}）"
       napped+=("$(record_line "$pane" "$kind" "$name" "$session" "$cwd" "$argv")")
     fi
