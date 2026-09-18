@@ -77,6 +77,7 @@ msg_zh() {
     manual_hint) printf '  可手動執行：%%s' ;;
     restore_done) printf '復原完成：成功 %%s、失敗 %%s。' ;;
     no_agents) printf '沒有可清理的 agent。%%s' ;;
+    unregistered_note) printf '（另有 %%s 個 pane 內的 agent，herdr 尚未辨識，未列入；到該 pane 查看或重跑）' ;;
     header_row) printf '來源\tAGENT\tPANE\t狀態\tPID\tRSS\t閒置\t備註\tCWD\t標題 / 指令' ;;
     pinned_note) printf '釘選排除：%%s（改 %%s）。' ;;
     preview_unreadable) printf '讀不到這個 pane 的畫面' ;;
@@ -128,6 +129,7 @@ msg_en() {
     manual_hint) printf '  Manual restore: %%s' ;;
     restore_done) printf 'Restore finished: %%s ok, %%s failed.' ;;
     no_agents) printf 'No agent to nap.%%s' ;;
+    unregistered_note) printf '(%%s in-pane agents herdr has not registered yet, not listed; check the pane or rerun)' ;;
     header_row) printf 'SRC\tAGENT\tPANE\tSTATUS\tPID\tRSS\tIDLE\tNOTES\tCWD\tTITLE / COMMAND' ;;
     pinned_note) printf 'Pinned, excluded: %%s (edit %%s).' ;;
     preview_unreadable) printf 'Cannot read this pane' ;;
@@ -200,6 +202,23 @@ agent_row_of_pane() {
 }
 
 agent_pid_of_pane() { agent_row_of_pane "$1" "$2" | awk '{print $1}'; }
+
+# pid 的祖先鏈裡有沒有 herdr server（argv0 basename 為 herdr）。有就代表這個
+# process 其實在某個 herdr pane 裡（pane shell 是 herdr server 的直屬子行程），
+# 只是 herdr 還沒把它辨識成 agent（例如 stub resume 後卡在信任確認、或偵測延遲）。
+# 這種不能當「herdr 之外直開」來 SIGTERM。
+inside_herdr_tree() {
+  local pid=$1 depth=0 line a
+  while [ "${pid:-0}" -gt 1 ] && [ "$depth" -lt 20 ]; do
+    line=$(awk -v x="$pid" '$1 == x { print; exit }' "$PS_DUMP")
+    [ -n "$line" ] || return 1
+    a=$(printf '%s' "$line" | awk '{ print $5 }'); a=${a##*/}
+    [ "$a" = herdr ] && return 0
+    pid=$(printf '%s' "$line" | awk '{ print $2 }')
+    depth=$((depth + 1))
+  done
+  return 1
+}
 
 # 整棵 process 樹（root 加上所有子孫）的 RSS 合計與子孫數，輸出 "total_kb desc_count"。
 # agent 本體的 RSS 不含 MCP server 與工具起的子行程，只看本體會低估。
@@ -643,6 +662,7 @@ is_ancestor() { case " $ancestors " in *" $1 "*) return 0 ;; esac; return 1; }
 rows=()
 herdr_pids=""
 pinned_panes=""
+unregistered=0
 now=$(date +%s)
 patterns=$(exclude_patterns "$EXCLUDE_FILE")
 # tab 標籤（side bar 顯示的名字）一次拉齊，釘選比對要用
@@ -680,6 +700,8 @@ while read -r pid _ppid rss etime args; do
   case "$argv0" in claude|grok) kind=$argv0 ;; *) continue ;; esac
   if is_ancestor "$pid"; then continue; fi
   case " $herdr_pids " in *" $pid "*) continue ;; esac
+  # 在 herdr pane 裡但 herdr 沒辨識成 agent：不當外部 process，只計數提示
+  if inside_herdr_tree "$pid"; then unregistered=$((unregistered + 1)); continue; fi
   cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
   read -r rss _desc_count <<< "$(tree_rss_of_pid "$pid")"
   # 散裝 process 沒有 session id 可查閒置，排序鍵給 -1 沉到最底
@@ -688,8 +710,12 @@ while read -r pid _ppid rss etime args; do
     "${cwd/#$HOME/~}" "$(echo "$args" | cut -c1-50)" "$etime")")
 done < "$PS_DUMP"
 
+# 在 herdr pane 裡但未被辨識的 agent 提示，--list 與 fzf 都附上
+unreg_note=""
+[ "$unregistered" -eq 0 ] || unreg_note=$(t unregistered_note "$unregistered")
+
 if [ "${#rows[@]}" -eq 0 ]; then
-  echo "$(t no_agents "")"
+  echo "$(t no_agents "$unreg_note")"
   exit 0
 fi
 
@@ -699,6 +725,7 @@ sorted_rows=$(printf '%s\n' "${rows[@]}" | sort -t$'\t' -k"$IDLE_SORT_FIELD","$I
 if [ "$MODE" = "--list" ]; then
   { echo "$header_row"; printf '%s\n' "$sorted_rows"; } | cut -f"$FIELDS_SHOWN" | column -t -s$'\t' |
     dim_pinned_lines "$pinned_panes"
+  [ -z "$unreg_note" ] || echo "$unreg_note"
   exit 0
 fi
 
@@ -707,7 +734,7 @@ candidate_rows=$(printf '%s\n' "$sorted_rows" | awk -F'\t' -v f="$PINNED_FIELD" 
 pinned_note=""
 [ -z "$pinned_panes" ] || pinned_note=$(t pinned_note "${pinned_panes# }" "${EXCLUDE_FILE/#$HOME/~}")
 if [ -z "$candidate_rows" ]; then
-  echo "$(t no_agents "$pinned_note")"
+  echo "$(t no_agents "${pinned_note}${unreg_note}")"
   exit 0
 fi
 
@@ -721,7 +748,7 @@ esac'
 selected=$({ echo "$header_row"; printf '%s\n' "$candidate_rows"; } | fzf --multi --reverse \
   --delimiter=$'\t' --with-nth="$FIELDS_SHOWN" --header-lines=1 \
   --preview="$preview_cmd" --preview-window='down,50%,follow' --bind='ctrl-/:toggle-preview' \
-  --header="$(t fzf_header "$pinned_note")") || {
+  --header="$(t fzf_header "${pinned_note}${unreg_note}")") || {
   echo "$(t fzf_cancel)"
   exit 0
 }

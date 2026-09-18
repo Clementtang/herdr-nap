@@ -226,6 +226,30 @@ test_should_use_field_list_that_both_cut_and_fzf_accept() {
   fi
 }
 
+# ---------- inside_herdr_tree ----------
+test_should_detect_process_inside_herdr_tree() {
+  PS_DUMP=$(mktemp)
+  # herdr server(500) -> pane shell(600, zsh) -> claude(700)；外部 claude(800) -> Terminal(801)
+  printf '%s\n' \
+    '500 1 1000 01:00 /opt/homebrew/bin/herdr server' \
+    '600 500 2000 01:00 -zsh' \
+    '700 600 3000 01:00 claude --resume abc' \
+    '801 1 900 01:00 /Applications/iTerm.app/Contents/MacOS/iTerm2' \
+    '800 801 3000 01:00 claude --resume xyz' > "$PS_DUMP"
+  inside_herdr_tree 700; assert_eq 0 $? in-herdr
+  inside_herdr_tree 800; assert_eq 1 $? external
+  inside_herdr_tree 600; assert_eq 0 $? pane-shell-itself
+  inside_herdr_tree 999; assert_eq 1 $? unknown-pid
+  rm -f "$PS_DUMP"
+}
+test_should_not_loop_on_ppid_cycle() {
+  PS_DUMP=$(mktemp)
+  # 病態：兩個 pid 互為 parent，不能無限迴圈
+  printf '%s\n' '10 11 0 01:00 a' '11 10 0 01:00 b' > "$PS_DUMP"
+  inside_herdr_tree 10; assert_eq 1 $? cycle-terminates
+  rm -f "$PS_DUMP"
+}
+
 # ---------- 訊息與語言 ----------
 message_keys() {
   # 從 case 分支抓 key（排除 * 預設分支）

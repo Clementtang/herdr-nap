@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 在 herdr pane 裡但 herdr 尚未辨識成 agent 的 claude/grok（例如 stub resume 後卡在信任確認、或偵測延遲）不再被誤判成「herdr 之外」而列進 SIGTERM 清單。改以「祖先鏈是否含 herdr server」判斷，這種 process 改成在清單附註計數，不誤殺、不隱瞞。
+
 ### Added
 
 - 英文訊息。依 `LC_ALL`/`LC_MESSAGES`/`LANG` 判斷，`zh` 開頭顯示繁體中文，其餘英文；`HERDR_NAP_LANG` 可強制。訊息集中成 `msg_zh`、`msg_en` 兩張表，測試比對 key 一致。
