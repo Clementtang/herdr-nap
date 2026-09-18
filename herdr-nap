@@ -14,34 +14,17 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-nap"
 RESTORE_LOG="$STATE_DIR/napped.tsv"
 STUB_DIR="$STATE_DIR/panes"
 
-MODE=${1:-}
-case "$MODE" in
-  ""|--list|--restore) ;;
-  *)
-    echo "用法：herdr-nap            互動挑選（TAB 多選、Enter 清理、Esc 取消）"
-    echo "      herdr-nap --list     只列出，不清理"
-    echo "      herdr-nap --restore  復原先前休眠的 herdr agent"
-    exit 1
-    ;;
-esac
-
-need() { command -v "$1" >/dev/null || { echo "找不到 $1 指令。" >&2; exit 1; }; }
-need herdr
-need jq
-# fzf 只有互動挑選用得到，--list 與 --restore 不該被它擋住
-[ -n "$MODE" ] || need fzf
-
 # 資料列全程 TSV：src kind pane status pid rss etime name session cwd title
 # fzf 用 --with-nth 隱藏 name / session；欄位不做 pad，之後要拿去打 herdr 的值
 # 保持原樣，對齊交給顯示層（--list 用 column -t、fzf 靠 tabstop）
 FIELDS_SHOWN='1,2,3,4,5,6,7,10,11'
 
+need() { command -v "$1" >/dev/null || { echo "找不到 $1 指令。" >&2; exit 1; }; }
+
 # 整份 ps 只拍一次快照，找直屬子 process、RSS、etime、散裝行程都從這份取。
 # 需要當下狀態時（送出 /exit 或 resume 之後）由呼叫端明確 refresh。
-PS_DUMP=$(mktemp "${TMPDIR:-/tmp}/herdr-nap.ps.XXXXXX")
-trap 'rm -f "$PS_DUMP"' EXIT
+PS_DUMP=""
 refresh_ps_dump() { ps -axo pid=,ppid=,rss=,etime=,args= > "$PS_DUMP"; }
-refresh_ps_dump
 
 pane_shell_pid() {
   herdr pane process-info --pane "$1" 2>/dev/null |
@@ -155,6 +138,27 @@ prune_stale_records() {
   done < "$RESTORE_LOG"
   mv "$RESTORE_LOG.tmp" "$RESTORE_LOG"
 }
+
+# 以上全是函式定義，主流程從這裡開始
+MODE=${1:-}
+case "$MODE" in
+  ""|--list|--restore) ;;
+  *)
+    echo "用法：herdr-nap            互動挑選（TAB 多選、Enter 清理、Esc 取消）"
+    echo "      herdr-nap --list     只列出，不清理"
+    echo "      herdr-nap --restore  復原先前休眠的 herdr agent"
+    exit 1
+    ;;
+esac
+
+need herdr
+need jq
+# fzf 只有互動挑選用得到，--list 與 --restore 不該被它擋住
+[ -n "$MODE" ] || need fzf
+
+PS_DUMP=$(mktemp "${TMPDIR:-/tmp}/herdr-nap.ps.XXXXXX")
+trap 'rm -f "$PS_DUMP"' EXIT
+refresh_ps_dump
 
 # ---------- 復原模式 ----------
 if [ "$MODE" = "--restore" ]; then
