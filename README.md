@@ -24,7 +24,7 @@ herdr-nap --list     list only, no changes
 herdr-nap --restore  bring back every napped herdr agent
 ```
 
-- The list is sorted by **idle time**, longest idle first. Idle time comes from the last timestamp in the conversation transcript (claude: `~/.claude/projects/*/<session>.jsonl` plus its `subagents/*.jsonl`; grok: `~/.grok/sessions/*/<session>/updates.jsonl`), not from process age, so a resumed old session does not look fresh. RSS is the whole process tree (MCP servers and tool children included). A notes column flags `子行程N` (N child processes), `subagent活動中` (subagent active), `剛啟動` (just started) and `無對話紀錄` (no transcript found). It only marks, it never blocks.
+- The list is sorted by **idle time**, longest idle first. Idle time comes from the last timestamp in the conversation transcript (claude: `~/.claude/projects/*/<session>.jsonl` plus its `subagents/*.jsonl`; grok: `~/.grok/sessions/*/<session>/updates.jsonl`), not from process age, so a resumed old session does not look fresh. RSS is the whole process tree (MCP servers and tool children included). A notes column flags `children:N`, `subagent-active`, `just-started` and `no-transcript`. It only marks, it never blocks.
 - A preview window under the fzf list shows the current screen of the highlighted pane (`herdr pane read --source visible`), Ctrl-/ toggles it.
 - **Pinned exclusions**: `~/.config/herdr-nap/exclude` holds one substring per line (`#` starts a comment). Agents whose pane title or tab label contains one are left out of the picker so they cannot be picked by mistake; `--list` still shows them, marked and dimmed. Substrings are used instead of pane or tab ids because ids change when a workspace is closed and reopened.
 - herdr-managed agents (claude, grok, and so on) are asked to exit with `herdr agent prompt <pane> /exit`: the process ends, the pane stays, herdr's state stays in sync. Verified with claude and grok.
@@ -38,6 +38,7 @@ herdr-nap --restore  bring back every napped herdr agent
 - claude / grok processes started outside herdr fall back to SIGTERM; `claude --resume` brings them back.
 - Safety: the tool's own pane is excluded, every nap is confirmed with y/N, each exit is verified and reported, records live in `~/.local/state/herdr-nap/napped.tsv`, stubs in `~/.local/state/herdr-nap/panes/`.
 - `--list` is read-only. Dependency checks follow the mode, so `--list` and `--restore` work without fzf.
+- **Language**: messages are English unless `LC_ALL`, `LC_MESSAGES` or `LANG` starts with `zh`, which selects Traditional Chinese. `HERDR_NAP_LANG=en|zh` overrides. A stub keeps the language it was written in.
 
 ### Install
 
@@ -105,7 +106,7 @@ tests/run-tests.sh
 
 - Resuming by pressing Enter starts the agent from the stub's `exec`, so herdr names it after the agent kind and a custom agent name is lost. `--restore` brings the name back.
 - Agents in `working` state are listed too (the fzf header warns); whether to nap them is your call.
-- Idle time is only available for claude and grok; other kinds show process age and `無對話紀錄`.
+- Idle time is only available for claude and grok; other kinds show process age and `no-transcript`.
 
 ## 繁體中文
 
@@ -133,6 +134,7 @@ herdr-nap --restore  復原先前清理掉的 herdr agent
 - herdr 之外直開的 claude / grok 維持 SIGTERM fallback，`claude --resume` 可復原。
 - 防呆：排除自身 pane、清理前 y/N 確認、逐一驗證退出並回報、復原紀錄存 `~/.local/state/herdr-nap/napped.tsv`、stub 存 `~/.local/state/herdr-nap/panes/`。
 - `--list` 是唯讀模式，不動狀態檔；依賴檢查按 mode 做，沒裝 fzf 仍能 `--list` 與 `--restore`。
+- **語言**：`LC_ALL`、`LC_MESSAGES` 或 `LANG` 以 `zh` 開頭就顯示繁體中文，其餘一律英文；`HERDR_NAP_LANG=en|zh` 可強制。stub 的訊息在產生當下就固定語言。訊息集中在腳本的 `msg_zh` 與 `msg_en` 兩張表，測試會比對兩邊 key 一致。
 
 ### 安裝
 

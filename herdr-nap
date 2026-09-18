@@ -29,7 +29,124 @@ PINNED_FIELD=16
 SUBAGENT_ACTIVE_WINDOW=600   # 秒。subagent 紀錄在這段時間內更新過就標記
 JUST_STARTED_WINDOW=300      # 秒。剛啟動或剛復原的 agent 標記出來
 
-need() { command -v "$1" >/dev/null || { echo "找不到 $1 指令。" >&2; exit 1; }; }
+# ---------- 訊息與語言 ----------
+# HERDR_NAP_LANG=zh|en 優先；否則 LC_ALL、LC_MESSAGES、LANG 以 zh 開頭就用中文，其餘英文。
+detect_lang() {
+  case "${HERDR_NAP_LANG:-${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}}" in zh*) echo zh ;; *) echo en ;; esac
+}
+NAP_LANG=$(detect_lang)
+
+# t <key> [printf 參數...]：取該語言的模板套 printf，不含結尾換行。兩張表的 key 必須一致（測試會比對）。
+t() {
+  local key=$1 fmt; shift
+  fmt=$("msg_$NAP_LANG" "$key")
+  # shellcheck disable=SC2059
+  printf -- "$fmt" "$@"
+}
+
+msg_zh() {
+  case "$1" in
+    need_missing) printf '找不到 %%s 指令。' ;;
+    usage) printf '用法：herdr-nap            互動挑選（TAB 多選、Enter 清理、Esc 取消）\n      herdr-nap --list     只列出，不清理\n      herdr-nap --restore  復原先前休眠的 herdr agent' ;;
+    mark_children) printf '子行程%%s' ;;
+    mark_subagent) printf 'subagent活動中' ;;
+    mark_just_started) printf '剛啟動' ;;
+    mark_no_transcript) printf '無對話紀錄' ;;
+    mark_pinned) printf '釘選' ;;
+    blocked_hint) printf '%%s %%s 已起來但停在確認畫面（例如工作區信任或權限確認），到該 pane 回答後即完成；紀錄保留，下次執行會自動清掉。' ;;
+    stub_banner) printf '%%s 已休眠，釋放 %%s' ;;
+    stub_sub) printf 'session %%s · 按 Enter 復原、Ctrl-C 回到 shell' ;;
+    stub_bye) printf '已離開待命，pane 回到 shell。手動復原：' ;;
+    stub_resuming) printf '復原中，約需 10 到 20 秒...' ;;
+    stub_exec_failed) printf '啟動 %%s 失敗，手動復原：%%s' ;;
+    restore_nothing) printf '沒有可復原的紀錄（%%s 是空的）。' ;;
+    restore_heading) printf '休眠中的 agent：' ;;
+    restore_confirm) printf '全部復原？[y/N] ' ;;
+    cancelled) printf '取消。' ;;
+    bad_record) printf '紀錄欄位不符（預期 pane/kind/name/session/cwd）：%%s，保留不動。' ;;
+    pane_gone) printf '%%s 已不存在，未復原，紀錄保留。' ;;
+    pane_gone_hint) printf '  要復原這筆請開一個空 pane 再執行：%%s' ;;
+    already_running) printf '%%s %%s 已在執行中，紀錄清除。' ;;
+    other_session) printf '%%s 上是另一個 session（%%s），未復原，紀錄保留。' ;;
+    other_session_hint) printf '  要復原這筆請自行指定空的 pane：%%s' ;;
+    restored_stub) printf '%%s %%s 已復原（stub 待命中，送出 Enter）' ;;
+    stub_not_up) printf '%%s %%s 尚未起來，stub 仍在待命，可自行到該 pane 按 Enter。' ;;
+    fg_busy) printf '%%s 前景已有其他 process，留在紀錄中。' ;;
+    restored_start) printf '%%s %%s 已復原（%%s）' ;;
+    restore_failed) printf '%%s %%s 復原失敗，herdr 回應：%%s' ;;
+    manual_hint) printf '  可手動執行：%%s' ;;
+    restore_done) printf '復原完成：成功 %%s、失敗 %%s。' ;;
+    no_agents) printf '沒有可清理的 agent。%%s' ;;
+    header_row) printf '來源\tAGENT\tPANE\t狀態\tPID\tRSS\t閒置\t備註\tCWD\t標題 / 指令' ;;
+    pinned_note) printf '釘選排除：%%s（改 %%s）。' ;;
+    preview_unreadable) printf '讀不到這個 pane 的畫面' ;;
+    preview_none) printf 'herdr 之外的 process，沒有 pane 畫面' ;;
+    fzf_header) printf 'TAB 勾選多個、Enter 清理所選、Esc 取消。閒置最久的排最上面；working 與備註有標記的還在做事，勾選前想清楚。\nherdr 列走 /exit，pane 留 stub 按 Enter 可復原；proc 列是 SIGTERM，要自己 claude --resume\n下方預覽窗是游標所在 pane 的目前畫面，Ctrl-/ 切換顯示。%%s' ;;
+    fzf_cancel) printf '取消，未清理任何 agent。' ;;
+    nap_confirm) printf '清理以上 %%s 個 agent？[y/N] ' ;;
+    not_exited) printf '%%s %%s 未退出，herdr 回應：%%s' ;;
+    no_session) printf '%%s %%s 已退出，但 herdr 沒有回報 session id，這個對話無法自動復原。' ;;
+    napped) printf '%%s %%s 已休眠（pane 保留，按 Enter 即可復原%%s）' ;;
+    napped_argv) printf '，復原時帶回 %%s' ;;
+    pid_alive) printf 'PID %%s 未退出（可自行 kill -9 %%s）' ;;
+    pid_killed) printf 'PID %%s 已終止（可用 claude --resume 或 grok --resume 復原）' ;;
+    restore_howto) printf '復原方式：到該 pane 按 Enter，或整批跑 herdr-nap --restore' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+msg_en() {
+  case "$1" in
+    need_missing) printf 'Command not found: %%s.' ;;
+    usage) printf 'Usage: herdr-nap            interactive picker (TAB to multi-select, Enter to nap, Esc to cancel)\n       herdr-nap --list     list only, no changes\n       herdr-nap --restore  bring back napped herdr agents' ;;
+    mark_children) printf 'children:%%s' ;;
+    mark_subagent) printf 'subagent-active' ;;
+    mark_just_started) printf 'just-started' ;;
+    mark_no_transcript) printf 'no-transcript' ;;
+    mark_pinned) printf 'pinned' ;;
+    blocked_hint) printf '%%s %%s is up but stopped at a prompt (workspace trust or a permission check). Answer it in that pane; the record is kept and cleared on the next run.' ;;
+    stub_banner) printf '%%s is napping, freed %%s' ;;
+    stub_sub) printf 'session %%s · Enter to resume, Ctrl-C for a shell' ;;
+    stub_bye) printf 'Left the stub, pane is back at a shell. Manual restore:' ;;
+    stub_resuming) printf 'Resuming, about 10 to 20 seconds...' ;;
+    stub_exec_failed) printf 'Failed to start %%s. Manual restore: %%s' ;;
+    restore_nothing) printf 'Nothing to restore (%%s is empty).' ;;
+    restore_heading) printf 'Napping agents:' ;;
+    restore_confirm) printf 'Restore all? [y/N] ' ;;
+    cancelled) printf 'Cancelled.' ;;
+    bad_record) printf 'Malformed record (expected pane/kind/name/session/cwd): %%s, left untouched.' ;;
+    pane_gone) printf '%%s no longer exists, not restored, record kept.' ;;
+    pane_gone_hint) printf '  Open an empty pane and run: %%s' ;;
+    already_running) printf '%%s %%s is already running, record cleared.' ;;
+    other_session) printf '%%s is running a different session (%%s), not restored, record kept.' ;;
+    other_session_hint) printf '  Pick an empty pane yourself and run: %%s' ;;
+    restored_stub) printf '%%s %%s restored (stub was waiting, sent Enter)' ;;
+    stub_not_up) printf '%%s %%s has not come up yet, the stub is still waiting; press Enter in that pane.' ;;
+    fg_busy) printf '%%s has another foreground process, record kept.' ;;
+    restored_start) printf '%%s %%s restored (%%s)' ;;
+    restore_failed) printf '%%s %%s failed to restore, herdr said: %%s' ;;
+    manual_hint) printf '  Manual restore: %%s' ;;
+    restore_done) printf 'Restore finished: %%s ok, %%s failed.' ;;
+    no_agents) printf 'No agent to nap.%%s' ;;
+    header_row) printf 'SRC\tAGENT\tPANE\tSTATUS\tPID\tRSS\tIDLE\tNOTES\tCWD\tTITLE / COMMAND' ;;
+    pinned_note) printf 'Pinned, excluded: %%s (edit %%s).' ;;
+    preview_unreadable) printf 'Cannot read this pane' ;;
+    preview_none) printf 'Process outside herdr, no pane to preview' ;;
+    fzf_header) printf 'TAB to multi-select, Enter to nap, Esc to cancel. Longest idle first; working agents and flagged notes are still busy, think before picking.\nherdr rows get /exit and a stub in the pane (Enter resumes); proc rows get SIGTERM, resume with claude --resume yourself\nThe preview below is the highlighted pane, Ctrl-/ toggles it. %%s' ;;
+    fzf_cancel) printf 'Cancelled, nothing napped.' ;;
+    nap_confirm) printf 'Nap these %%s agents? [y/N] ' ;;
+    not_exited) printf '%%s %%s did not exit, herdr said: %%s' ;;
+    no_session) printf '%%s %%s exited, but herdr reported no session id, so this conversation cannot be restored automatically.' ;;
+    napped) printf '%%s %%s napping (pane kept, press Enter to resume%%s)' ;;
+    napped_argv) printf ', flags restored: %%s' ;;
+    pid_alive) printf 'PID %%s did not exit (kill -9 %%s if needed)' ;;
+    pid_killed) printf 'PID %%s terminated (resume with claude --resume or grok --resume)' ;;
+    restore_howto) printf 'To restore: press Enter in the pane, or run herdr-nap --restore for all' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+need() { command -v "$1" >/dev/null || { echo "$(t need_missing "$1")" >&2; exit 1; }; }
 
 # 以 herdr plugin 身分執行時 PATH 不一定有 herdr，但 herdr 會給 HERDR_BIN_PATH
 HERDR_BIN=${HERDR_BIN_PATH:-herdr}
@@ -190,12 +307,12 @@ etime_to_secs() {
 # 參數：session etime desc_count now activity_epoch sub_epoch（後兩個沒有時給 -）
 risk_markers() {
   local session=$1 etime=$2 desc_count=$3 now=$4 activity=$5 sub_epoch=$6 out=""
-  [ "$desc_count" -gt 0 ] && out="$out,子行程${desc_count}"
+  [ "$desc_count" -gt 0 ] && out="$out,$(t mark_children "$desc_count")"
   if [ "$sub_epoch" != - ] && [ $((now - sub_epoch)) -lt "$SUBAGENT_ACTIVE_WINDOW" ]; then
-    out="$out,subagent活動中"
+    out="$out,$(t mark_subagent)"
   fi
-  [ "$(etime_to_secs "$etime")" -lt "$JUST_STARTED_WINDOW" ] && out="$out,剛啟動"
-  [ -n "$session" ] && [ "$activity" = - ] && out="$out,無對話紀錄"
+  [ "$(etime_to_secs "$etime")" -lt "$JUST_STARTED_WINDOW" ] && out="$out,$(t mark_just_started)"
+  [ -n "$session" ] && [ "$activity" = - ] && out="$out,$(t mark_no_transcript)"
   printf '%s' "${out:+${out#,}}"
   [ -n "$out" ] || printf '%s' -
 }
@@ -279,7 +396,7 @@ resume_outcome() {
   return 2
 }
 blocked_hint() {
-  echo "$1 $2 已起來但停在確認畫面（例如工作區信任或權限確認），到該 pane 回答後即完成；紀錄保留，下次執行會自動清掉。"
+  echo "$(t blocked_hint "$1" "$2")"
 }
 
 # argv 逐 token 切開重播，關掉 globbing 以免 --add-dir * 這種值被展開成檔名。
@@ -337,7 +454,7 @@ sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # 出來的 agent 就是 pane shell 本身，下次清理會把整個 pane 一起收掉。
 write_and_arm_stub() {
   local pane=$1 kind=$2 name=$3 session=$4 cwd=$5 freed=$6 argv=$7 title=$8
-  local path tmp q_hint q_cwd q_session q_banner q_sub q_title q_argv="" tok
+  local path tmp q_hint q_cwd q_session q_banner q_sub q_title q_bye q_resuming q_fail q_argv="" tok
   path=$(stub_path "$pane"); tmp="$path.tmp"
   [ -n "$cwd" ] || cwd=$HOME
   # 待命時把終端標題設成「[nap] 原標題」，側欄一眼看出睡著的是誰。用 OSC 跳脫
@@ -349,8 +466,12 @@ write_and_arm_stub() {
   glob_off; for tok in $argv; do q_argv="$q_argv $(sq "$tok")"; done; glob_restore
   q_cwd=$(sq "$cwd")
   q_session=$(sq "$session")
-  q_banner=$(sq "$kind 已休眠，釋放 ${freed}")
-  q_sub=$(sq "session $session · 按 Enter 復原、Ctrl-C 回到 shell")
+  q_banner=$(sq "$(t stub_banner "$kind" "$freed")")
+  q_sub=$(sq "$(t stub_sub "$session")")
+  # stub 的訊息在產生時就依當下語言固定下來
+  q_bye=$(sq "$(t stub_bye)")
+  q_resuming=$(sq "$(t stub_resuming)")
+  q_fail=$(sq "$(t stub_exec_failed "$kind" "$(restore_hint "$pane" "$kind" "$name" "$session" "$argv")")")
   mkdir -p "$STUB_DIR"
   cat > "$tmp" <<EOF
 #!/bin/bash
@@ -359,7 +480,7 @@ write_and_arm_stub() {
 shopt -s execfail
 _bye() {
   stty sane 2>/dev/null || true
-  printf '\n\033[2m%s\033[0m\n  %s\n\n' '已離開待命，pane 回到 shell。手動復原：' ${q_hint}
+  printf '\n\033[2m%s\033[0m\n  %s\n\n' ${q_bye} ${q_hint}
   exit 0
 }
 trap _bye INT
@@ -369,9 +490,9 @@ printf '\033]0;%s\007' ${q_title}
 printf '\n\033[1;35m%s\033[0m\n' ${q_banner}
 printf '\033[2m%s\033[0m\n\n' ${q_sub}
 IFS= read -r _ || exit 0
-printf '復原中，約需 10 到 20 秒...\n'
+printf '%s\n' ${q_resuming}
 exec ${kind}${q_argv} --resume ${q_session}
-printf '啟動 %s 失敗，手動復原：%s\n' ${kind} ${q_hint}
+printf '%s\n' ${q_fail}
 EOF
   chmod +x "$tmp" && mv "$tmp" "$path"
   herdr pane run "$pane" bash "$path" >/dev/null 2>&1
@@ -402,9 +523,7 @@ MODE=${1:-}
 case "$MODE" in
   ""|--list|--restore) ;;
   *)
-    echo "用法：herdr-nap            互動挑選（TAB 多選、Enter 清理、Esc 取消）"
-    echo "      herdr-nap --list     只列出，不清理"
-    echo "      herdr-nap --restore  復原先前休眠的 herdr agent"
+    echo "$(t usage)"
     exit 1
     ;;
 esac
@@ -422,21 +541,21 @@ refresh_ps_dump
 if [ "$MODE" = "--restore" ]; then
   prune_stale_records
   if [ ! -s "$RESTORE_LOG" ]; then
-    echo "沒有可復原的紀錄（$RESTORE_LOG 是空的）。"
+    echo "$(t restore_nothing "$RESTORE_LOG")"
     exit 0
   fi
-  echo "休眠中的 agent："
+  echo "$(t restore_heading)"
   cut -f1-4 "$RESTORE_LOG" | column -t -s$'\t'
-  printf "全部復原？[y/N] "
+  t restore_confirm
   read -r ans
-  [ "$ans" = "y" ] || [ "$ans" = "Y" ] || { echo "取消。"; exit 0; }
+  [ "$ans" = "y" ] || [ "$ans" = "Y" ] || { echo "$(t cancelled)"; exit 0; }
   ok=0; fail=0
   : > "$RESTORE_LOG.tmp"
   keep_record() { record_line "$1" "$2" "$3" "$4" "$5" "$6" >> "$RESTORE_LOG.tmp"; }
   while IFS=$'\t' read -r pane kind name session cwd argv; do
     [ -n "$pane" ] || continue
     if [ -z "$session" ]; then
-      echo "紀錄欄位不符（預期 pane/kind/name/session/cwd）：${pane}，保留不動。"
+      echo "$(t bad_record "$pane")"
       keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"
       fail=$((fail + 1))
       continue
@@ -445,15 +564,15 @@ if [ "$MODE" = "--restore" ]; then
     if ! pane_exists "$pane"; then
       # pane 已被關掉（或 workspace 整個沒了）。session id 只存在紀錄裡，
       # 保留紀錄，請使用者挑一個空 pane 復原。
-      echo "$pane 已不存在，未復原，紀錄保留。"
-      echo "  要復原這筆請開一個空 pane 再執行：${hint/--pane $pane/--pane <pane>}"
+      echo "$(t pane_gone "$pane")"
+      echo "$(t pane_gone_hint "${hint/--pane $pane/--pane <pane>}")"
       keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"
       fail=$((fail + 1))
       continue
     fi
     running=$(running_session_of_pane "$pane")
     if [ "$running" = "$session" ]; then
-      echo "$pane $kind 已在執行中，紀錄清除。"
+      echo "$(t already_running "$pane" "$kind")"
       rm -f "$(stub_path "$pane")"
       ok=$((ok + 1))
       continue
@@ -461,8 +580,8 @@ if [ "$MODE" = "--restore" ]; then
     if [ -n "$running" ]; then
       # pane 被另一個 session 佔用。這筆的 session id 只存在紀錄裡，丟了就
       # 再也拉不回來，所以保留讓使用者自己決定要不要換 pane 復原。
-      echo "$pane 上是另一個 session（${running}），未復原，紀錄保留。"
-      echo "  要復原這筆請自行指定空的 pane：${hint/--pane $pane/--pane <pane>}"
+      echo "$(t other_session "$pane" "$running")"
+      echo "$(t other_session_hint "${hint/--pane $pane/--pane <pane>}")"
       keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"
       fail=$((fail + 1))
       continue
@@ -475,33 +594,33 @@ if [ "$MODE" = "--restore" ]; then
       herdr pane send-keys "$pane" enter >/dev/null 2>&1 || true
       resume_outcome "$pane" "$session" && rc=0 || rc=$?
       case "$rc" in
-        0) echo "$pane $kind 已復原（stub 待命中，送出 Enter）"
+        0) echo "$(t restored_stub "$pane" "$kind")"
            rm -f "$(stub_path "$pane")"; ok=$((ok + 1)) ;;
         1) blocked_hint "$pane" "$kind"
            keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"; fail=$((fail + 1)) ;;
-        *) echo "$pane $kind 尚未起來，stub 仍在待命，可自行到該 pane 按 Enter。"
+        *) echo "$(t stub_not_up "$pane" "$kind")"
            keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"; fail=$((fail + 1)) ;;
       esac
     elif ! pane_at_prompt "$pane"; then
-      echo "$pane 前景已有其他 process，留在紀錄中。"
+      echo "$(t fg_busy "$pane")"
       keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"
       fail=$((fail + 1))
     else
       out=$(start_agent_with_argv "$name" "$kind" "$pane" "$argv" "$session")
       resume_outcome "$pane" "$session" && rc=0 || rc=$?
       case "$rc" in
-        0) echo "$pane $kind 已復原（${argv:+$argv }--resume ${session}）"
+        0) echo "$(t restored_start "$pane" "$kind" "${argv:+$argv }--resume $session")"
            rm -f "$(stub_path "$pane")"; ok=$((ok + 1)) ;;
         1) blocked_hint "$pane" "$kind"
            keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"; fail=$((fail + 1)) ;;
-        *) echo "$pane $kind 復原失敗，herdr 回應：${out}"
-           echo "  可手動執行：${hint}"
+        *) echo "$(t restore_failed "$pane" "$kind" "$out")"
+           echo "$(t manual_hint "$hint")"
            keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"; fail=$((fail + 1)) ;;
       esac
     fi
   done < "$RESTORE_LOG"
   mv "$RESTORE_LOG.tmp" "$RESTORE_LOG"
-  echo "復原完成：成功 ${ok}、失敗 ${fail}。"
+  echo "$(t restore_done "$ok" "$fail")"
   exit 0
 fi
 
@@ -545,7 +664,7 @@ while IFS=$'\t' read -r kind pane tab status name session cwd title; do
   if [ -n "$activity" ]; then idle_secs=$((now - activity)); else idle_secs=$(etime_to_secs "$etime"); fi
   [ "$idle_secs" -ge 0 ] || idle_secs=0
   risk=$(risk_markers "$session" "$etime" "$desc_count" "$now" "${activity:--}" "$sub_epoch")
-  if [ "$pinned" -eq 1 ]; then risk="釘選${risk:+,$risk}"; risk=${risk%,-}; fi
+  if [ "$pinned" -eq 1 ]; then risk="$(t mark_pinned)${risk:+,$risk}"; risk=${risk%,-}; fi
   rows+=("$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
     herdr "$kind" "$pane" "$status" "$pid" "$((rss / 1024))MB" "$(fmt_age "$idle_secs")" \
     "$risk" "${cwd/#$HOME/~}" "$title" "$etime" "$name" "$session" "$(replay_flags "$args")" \
@@ -570,11 +689,11 @@ while read -r pid _ppid rss etime args; do
 done < "$PS_DUMP"
 
 if [ "${#rows[@]}" -eq 0 ]; then
-  echo "沒有可清理的 agent。"
+  echo "$(t no_agents "")"
   exit 0
 fi
 
-header_row=$'來源\tAGENT\tPANE\t狀態\tPID\tRSS\t閒置\t備註\tCWD\t標題 / 指令\tUPTIME\tNAME\tSESSION\tARGV\tIDLE_SECS\tPINNED'
+header_row="$(t header_row)"$'\tUPTIME\tNAME\tSESSION\tARGV\tIDLE_SECS\tPINNED'
 # 閒置最久的排最上面，同秒數再依 pane 排，順序才穩定；RSS 是整棵 process 樹的合計
 sorted_rows=$(printf '%s\n' "${rows[@]}" | sort -t$'\t' -k"$IDLE_SORT_FIELD","$IDLE_SORT_FIELD"nr -k3,3)
 if [ "$MODE" = "--list" ]; then
@@ -586,9 +705,9 @@ fi
 # 釘選的 pane 不進挑選清單，連誤點的機會都不給
 candidate_rows=$(printf '%s\n' "$sorted_rows" | awk -F'\t' -v f="$PINNED_FIELD" '$f != 1')
 pinned_note=""
-[ -z "$pinned_panes" ] || pinned_note="釘選排除：${pinned_panes# }（改 ${EXCLUDE_FILE/#$HOME/~}）。"
+[ -z "$pinned_panes" ] || pinned_note=$(t pinned_note "${pinned_panes# }" "${EXCLUDE_FILE/#$HOME/~}")
 if [ -z "$candidate_rows" ]; then
-  echo "沒有可清理的 agent。${pinned_note}"
+  echo "$(t no_agents "$pinned_note")"
   exit 0
 fi
 
@@ -596,23 +715,21 @@ fi
 # {3} 是 PANE 欄；fzf 依 delimiter 切欄位時可能帶著尾端的 tab，先清掉空白。
 preview_cmd='p=$(printf %s {3} | tr -d "[:space:]")
 case "$p" in
-  w*:p*) herdr pane read --source visible "$p" 2>/dev/null || echo "讀不到這個 pane 的畫面" ;;
-  *) echo "herdr 之外的 process，沒有 pane 畫面" ;;
+  w*:p*) herdr pane read --source visible "$p" 2>/dev/null || echo '"$(sq "$(t preview_unreadable)")"' ;;
+  *) echo '"$(sq "$(t preview_none)")"' ;;
 esac'
 selected=$({ echo "$header_row"; printf '%s\n' "$candidate_rows"; } | fzf --multi --reverse \
   --delimiter=$'\t' --with-nth="$FIELDS_SHOWN" --header-lines=1 \
   --preview="$preview_cmd" --preview-window='down,50%,follow' --bind='ctrl-/:toggle-preview' \
-  --header="TAB 勾選多個、Enter 清理所選、Esc 取消。閒置最久的排最上面；working 與備註有標記的還在做事，勾選前想清楚。
-herdr 列走 /exit，pane 留 stub 按 Enter 可復原；proc 列是 SIGTERM，要自己 claude --resume
-下方預覽窗是游標所在 pane 的目前畫面，Ctrl-/ 切換顯示。${pinned_note}") || {
-  echo "取消，未清理任何 agent。"
+  --header="$(t fzf_header "$pinned_note")") || {
+  echo "$(t fzf_cancel)"
   exit 0
 }
 
 echo "$selected" | cut -f"$FIELDS_SHOWN" | column -t -s$'\t'
-printf "清理以上 %d 個 agent？[y/N] " "$(echo "$selected" | wc -l | tr -d ' ')"
+t nap_confirm "$(echo "$selected" | wc -l | tr -d ' ')"
 read -r ans
-[ "$ans" != "y" ] && [ "$ans" != "Y" ] && { echo "取消。"; exit 0; }
+[ "$ans" != "y" ] && [ "$ans" != "Y" ] && { echo "$(t cancelled)"; exit 0; }
 
 napped=()
 sig_pids=""
@@ -623,14 +740,14 @@ while IFS=$'\t' read -r src kind pane _status pid rss _idle _risk cwd title _eti
     sleep 1
     refresh_ps_dump
     if [ -n "$(agent_pid_of_pane "$pane" "$kind")" ]; then
-      echo "$pane $kind 未退出，herdr 回應：$out"
+      echo "$(t not_exited "$pane" "$kind" "$out")"
     elif [ -z "$session" ]; then
       # 沒有 session id 就沒有復原路徑，不留紀錄也不留 stub，明講後果
-      echo "$pane $kind 已退出，但 herdr 沒有回報 session id，這個對話無法自動復原。"
+      echo "$(t no_session "$pane" "$kind")"
     else
       cwd="${cwd/#\~/$HOME}"
       write_and_arm_stub "$pane" "$kind" "$name" "$session" "$cwd" "$rss" "$argv" "$title"
-      echo "$pane $kind 已休眠（pane 保留，按 Enter 即可復原${argv:+，復原時帶回 ${argv}}）"
+      echo "$(t napped "$pane" "$kind" "${argv:+$(t napped_argv "$argv")}")"
       napped+=("$(record_line "$pane" "$kind" "$name" "$session" "$cwd" "$argv")")
     fi
   else
@@ -644,9 +761,9 @@ if [ -n "$sig_pids" ]; then
   refresh_ps_dump
   for pid in $sig_pids; do
     if awk -v x="$pid" '$1 == x { found = 1 } END { exit !found }' "$PS_DUMP"; then
-      echo "PID $pid 未退出（可自行 kill -9 ${pid}）"
+      echo "$(t pid_alive "$pid" "$pid")"
     else
-      echo "PID $pid 已終止（可用 claude --resume 或 grok --resume 復原）"
+      echo "$(t pid_killed "$pid")"
     fi
   done
 fi
@@ -662,5 +779,5 @@ if [ "${#napped[@]}" -gt 0 ]; then
   fi
   printf '%s\n' "${napped[@]}" >> "$RESTORE_LOG.tmp"
   mv "$RESTORE_LOG.tmp" "$RESTORE_LOG"
-  echo "復原方式：到該 pane 按 Enter，或整批跑 herdr-nap --restore"
+  echo "$(t restore_howto)"
 fi

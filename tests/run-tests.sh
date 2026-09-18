@@ -6,6 +6,7 @@ set -uo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 export HERDR_NAP_LIB_ONLY=1
+export HERDR_NAP_LANG=zh   # 既有測試以中文訊息為準；英文另有專門測試
 # shellcheck source=../herdr-nap
 . "$HERE/../herdr-nap"
 set +e
@@ -223,6 +224,36 @@ test_should_use_field_list_that_both_cut_and_fzf_accept() {
   if command -v fzf >/dev/null; then
     assert_eq "$row" "$(printf '%s\n' "$row" | fzf --filter=3 --delimiter=$'\t' --with-nth="$FIELDS_SHOWN")" fzf
   fi
+}
+
+# ---------- 訊息與語言 ----------
+message_keys() {
+  # 從 case 分支抓 key（排除 * 預設分支）
+  # declare -f 會把 `key) printf ... ;;` 重排成多行，只認行首的 `key)`
+  declare -f "$1" | awk '/^ *[a-z_]+\)/ { sub(/\).*/, ""); sub(/^ */, ""); print }' | sort
+}
+test_should_have_identical_keys_in_both_message_tables() {
+  assert_eq "$(message_keys msg_zh)" "$(message_keys msg_en)"
+  [ "$(message_keys msg_zh | wc -l | tr -d ' ')" -gt 40 ] && assert_eq 1 1 || assert_eq "many keys" "few keys"
+}
+test_should_render_message_in_selected_language() {
+  NAP_LANG=zh; assert_eq "w1:p1 claude 已在執行中，紀錄清除。" "$(t already_running w1:p1 claude)" zh
+  NAP_LANG=en; assert_eq "w1:p1 claude is already running, record cleared." "$(t already_running w1:p1 claude)" en
+  NAP_LANG=en; assert_eq "children:3" "$(t mark_children 3)" en-mark
+  NAP_LANG=en; assert_eq $'SRC\tAGENT\tPANE' "$(t header_row | cut -f1-3)" en-header
+  NAP_LANG=zh
+}
+test_should_detect_language_from_env() {
+  assert_eq zh "$(HERDR_NAP_LANG=zh LANG=en_US.UTF-8 detect_lang)" override
+  assert_eq en "$(HERDR_NAP_LANG= LC_ALL= LC_MESSAGES= LANG=en_US.UTF-8 detect_lang)" lang-en
+  assert_eq zh "$(HERDR_NAP_LANG= LC_ALL= LC_MESSAGES= LANG=zh_TW.UTF-8 detect_lang)" lang-zh
+  assert_eq zh "$(HERDR_NAP_LANG= LC_ALL=zh_CN.UTF-8 LANG=en_US.UTF-8 detect_lang)" lc-all-wins
+  assert_eq en "$(HERDR_NAP_LANG= LC_ALL= LC_MESSAGES= LANG= detect_lang)" unset
+}
+test_should_mark_risks_in_english_when_selected() {
+  NAP_LANG=en
+  assert_eq "children:2,just-started,no-transcript" "$(risk_markers sid 02:00 2 "$(date +%s)" - -)"
+  NAP_LANG=zh
 }
 
 # ---------- 釘選排除 ----------
