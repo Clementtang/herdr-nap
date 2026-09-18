@@ -14,9 +14,9 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-nap"
 RESTORE_LOG="$STATE_DIR/napped.tsv"
 STUB_DIR="$STATE_DIR/panes"
 
-# 資料列全程 TSV：src kind pane status pid rss etime name session cwd title
-# fzf 用 --with-nth 隱藏 name / session；欄位不做 pad，之後要拿去打 herdr 的值
-# 保持原樣，對齊交給顯示層（--list 用 column -t、fzf 靠 tabstop）
+# 資料列全程 TSV：src kind pane status pid rss etime name session cwd title argv
+# fzf 用 --with-nth 隱藏 name / session / argv；欄位不做 pad，之後要拿去打 herdr
+# 的值保持原樣，對齊交給顯示層（--list 用 column -t、fzf 靠 tabstop）
 FIELDS_SHOWN='1,2,3,4,5,6,7,10,11'
 
 need() { command -v "$1" >/dev/null || { echo "找不到 $1 指令。" >&2; exit 1; }; }
@@ -33,17 +33,93 @@ pane_shell_pid() {
 
 # pane 的 agent 本體是 pane shell 的直屬子 process（前景 process 在 agent
 # 跑工具時會是孫層子 process，抓前景會拿錯 PID 與 RSS）。
-# 輸出 "pid rss etime"，沒有就沒有輸出。
+# 輸出 "pid rss etime args..."，沒有就沒有輸出。
 agent_row_of_pane() {
   local shell_pid
   shell_pid=$(pane_shell_pid "$1")
   [ -n "$shell_pid" ] || return 0
   awk -v s="$shell_pid" -v k="$2" '
-    $2 == s { a = $5; sub(/^.*\//, "", a); if (a == k) { print $1, $3, $4; exit } }
-  ' "$PS_DUMP"
+    $2 == s { a = $5; sub(/^.*\//, "", a); if (a == k) { print; exit } }
+  ' "$PS_DUMP" | awk '{ $2 = ""; print }'
 }
 
 agent_pid_of_pane() { agent_row_of_pane "$1" "$2" | awk '{print $1}'; }
+
+# 從 ps 的 args 取出復原時要重播的旗標。去掉 argv0、所有指定或接續 session 的
+# 旗標（復原時另外接 --resume <session>）以及裸位置參數（多半是啟動時的
+# prompt，重播會被當成新訊息送出）；其餘旗標與其值原樣保留。
+# 值是否屬於前一個旗標用「前一個旗標不是已知布林旗標」判斷；ps 看不到原本的
+# 引號，含空白的值拆成多個 token 後只會留第一個，這是已知限制。
+BOOLEAN_FLAGS=' --dangerously-skip-permissions --allow-dangerously-skip-permissions
+ --ax-screen-reader --bg --background --bare --brief --chrome --no-chrome
+ --disable-slash-commands --exclude-dynamic-system-prompt-sections
+ --forward-subagent-text --ide --include-hook-events --include-partial-messages
+ --no-session-persistence --replay-user-messages --restricted --safe-mode
+ --strict-mcp-config --tmux --verbose --always-approve --debug --disable-web-search
+ --fullscreen --minimal --no-alt-screen --no-plan --no-subagents --oauth
+ --restore-code --verbatim '
+# 清單以空白或換行分隔，行尾的旗標後面接的是換行，比對要吃兩種
+is_boolean_flag() { case "$BOOLEAN_FLAGS" in *[[:space:]]"$1"[[:space:]]*) return 0 ;; esac; return 1; }
+
+# 暫時關掉 globbing 做字串切 token，結束後還原呼叫端原本的設定
+glob_off() { case $- in *f*) GLOB_WAS_OFF=1 ;; *) GLOB_WAS_OFF=0 ;; esac; set -f; }
+glob_restore() { [ "$GLOB_WAS_OFF" -eq 1 ] || set +f; }
+
+replay_flags() {
+  local out="" tok prev_takes_value=0
+  glob_off
+  # shellcheck disable=SC2086
+  set -- $1
+  glob_restore
+  [ $# -gt 0 ] && shift
+  while [ $# -gt 0 ]; do
+    tok=$1; shift
+    case "$tok" in
+      -r|--resume|-s|--session-id|--teleport|--from-pr)
+        prev_takes_value=0
+        # 值不以 - 開頭就一併丟掉（-r、--teleport、--from-pr 的值可省略）
+        if [ $# -gt 0 ]; then case "$1" in -*) ;; *) shift ;; esac; fi ;;
+      --resume=*|--session-id=*|--teleport=*|--from-pr=*|-c|--continue|--fork-session)
+        prev_takes_value=0 ;;
+      -*)
+        out="$out $tok"
+        if is_boolean_flag "$tok" || [ "${tok#*=}" != "$tok" ]; then
+          prev_takes_value=0
+        else
+          prev_takes_value=1
+        fi ;;
+      *)
+        [ "$prev_takes_value" -eq 1 ] && out="$out $tok"
+        prev_takes_value=0 ;;
+    esac
+  done
+  printf '%s' "${out# }"
+}
+
+# 一筆復原紀錄：pane kind name session cwd argv（argv 是 replay_flags 的輸出，
+# 舊紀錄沒有這欄，讀回來時是空字串）
+record_line() { printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6"; }
+
+# 手動復原指令，給提示訊息與 stub 用
+restore_hint() {
+  local pane=$1 kind=$2 name=$3 session=$4 argv=$5
+  printf 'herdr agent start %s --kind %s --pane %s -- %s--resume %s' \
+    "$name" "$kind" "$pane" "${argv:+$argv }" "$session"
+}
+
+pane_exists() { herdr pane process-info --pane "$1" >/dev/null 2>&1; }
+
+# argv 逐 token 切開重播，關掉 globbing 以免 --add-dir * 這種值被展開成檔名
+start_agent_with_argv() {
+  local name=$1 kind=$2 pane=$3 argv=$4 session=$5 rc
+  glob_off
+  # shellcheck disable=SC2086
+  set -- $argv
+  glob_restore
+  herdr agent start "$name" --kind "$kind" --pane "$pane" -- "$@" --resume "$session" >/dev/null 2>&1
+  rc=$?
+  return "$rc"
+}
 
 stub_path() { echo "$STUB_DIR/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '_').sh"; }
 
@@ -87,11 +163,13 @@ sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # 「pane shell 的直屬子 process」這個位置；若讓 stub 取代 pane shell，resume
 # 出來的 agent 就是 pane shell 本身，下次清理會把整個 pane 一起收掉。
 write_and_arm_stub() {
-  local pane=$1 kind=$2 name=$3 session=$4 cwd=$5 freed=$6
-  local path tmp q_hint q_cwd q_session q_banner q_sub
+  local pane=$1 kind=$2 name=$3 session=$4 cwd=$5 freed=$6 argv=$7
+  local path tmp q_hint q_cwd q_session q_banner q_sub q_argv="" tok
   path=$(stub_path "$pane"); tmp="$path.tmp"
   [ -n "$cwd" ] || cwd=$HOME
-  q_hint=$(sq "herdr agent start $name --kind $kind --pane $pane -- --resume $session")
+  q_hint=$(sq "$(restore_hint "$pane" "$kind" "$name" "$session" "$argv")")
+  # 重播的旗標逐個包單引號，寫進 stub 後不會被 glob 或再次展開
+  glob_off; for tok in $argv; do q_argv="$q_argv $(sq "$tok")"; done; glob_restore
   q_cwd=$(sq "$cwd")
   q_session=$(sq "$session")
   q_banner=$(sq "$kind 已休眠，釋放 ${freed}")
@@ -114,7 +192,7 @@ printf '\n\033[1;35m%s\033[0m\n' ${q_banner}
 printf '\033[2m%s\033[0m\n\n' ${q_sub}
 IFS= read -r _ || exit 0
 printf '復原中，約需 10 到 20 秒...\n'
-exec ${kind} --resume ${q_session}
+exec ${kind}${q_argv} --resume ${q_session}
 printf '啟動 %s 失敗，手動復原：%s\n' ${kind} ${q_hint}
 EOF
   chmod +x "$tmp" && mv "$tmp" "$path"
@@ -126,20 +204,21 @@ EOF
 # 否則那個 session id 就永遠找不回來了。
 prune_stale_records() {
   [ -s "$RESTORE_LOG" ] || return 0
-  local pane kind name session cwd
+  local pane kind name session cwd argv
   : > "$RESTORE_LOG.tmp"
-  while IFS=$'\t' read -r pane kind name session cwd; do
+  while IFS=$'\t' read -r pane kind name session cwd argv; do
     [ -n "$pane" ] || continue
     if [ -n "$session" ] && [ "$(running_session_of_pane "$pane")" = "$session" ]; then
       rm -f "$(stub_path "$pane")"
       continue
     fi
-    printf '%s\t%s\t%s\t%s\t%s\n' "$pane" "$kind" "$name" "$session" "$cwd" >> "$RESTORE_LOG.tmp"
+    record_line "$pane" "$kind" "$name" "$session" "$cwd" "$argv" >> "$RESTORE_LOG.tmp"
   done < "$RESTORE_LOG"
   mv "$RESTORE_LOG.tmp" "$RESTORE_LOG"
 }
 
 # 以上全是函式定義，主流程從這裡開始
+
 MODE=${1:-}
 case "$MODE" in
   ""|--list|--restore) ;;
@@ -174,18 +253,26 @@ if [ "$MODE" = "--restore" ]; then
   [ "$ans" = "y" ] || [ "$ans" = "Y" ] || { echo "取消。"; exit 0; }
   ok=0; fail=0
   : > "$RESTORE_LOG.tmp"
-  keep_record() {
-    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" >> "$RESTORE_LOG.tmp"
-  }
-  while IFS=$'\t' read -r pane kind name session cwd; do
+  keep_record() { record_line "$1" "$2" "$3" "$4" "$5" "$6" >> "$RESTORE_LOG.tmp"; }
+  while IFS=$'\t' read -r pane kind name session cwd argv; do
     [ -n "$pane" ] || continue
-    running=$(running_session_of_pane "$pane")
     if [ -z "$session" ]; then
       echo "紀錄欄位不符（預期 pane/kind/name/session/cwd）：${pane}，保留不動。"
-      keep_record "$pane" "$kind" "$name" "$session" "$cwd"
+      keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"
       fail=$((fail + 1))
       continue
     fi
+    hint=$(restore_hint "$pane" "$kind" "$name" "$session" "$argv")
+    if ! pane_exists "$pane"; then
+      # pane 已被關掉（或 workspace 整個沒了）。session id 只存在紀錄裡，
+      # 保留紀錄，請使用者挑一個空 pane 復原。
+      echo "$pane 已不存在，未復原，紀錄保留。"
+      echo "  要復原這筆請開一個空 pane 再執行：${hint/--pane $pane/--pane <pane>}"
+      keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"
+      fail=$((fail + 1))
+      continue
+    fi
+    running=$(running_session_of_pane "$pane")
     if [ "$running" = "$session" ]; then
       echo "$pane $kind 已在執行中，紀錄清除。"
       rm -f "$(stub_path "$pane")"
@@ -196,8 +283,8 @@ if [ "$MODE" = "--restore" ]; then
       # pane 被另一個 session 佔用。這筆的 session id 只存在紀錄裡，丟了就
       # 再也拉不回來，所以保留讓使用者自己決定要不要換 pane 復原。
       echo "$pane 上是另一個 session（${running}），未復原，紀錄保留。"
-      echo "  要復原這筆請自行指定空的 pane：herdr agent start $name --kind $kind --pane <pane> -- --resume $session"
-      keep_record "$pane" "$kind" "$name" "$session" "$cwd"
+      echo "  要復原這筆請自行指定空的 pane：${hint/--pane $pane/--pane <pane>}"
+      keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"
       fail=$((fail + 1))
       continue
     fi
@@ -213,20 +300,20 @@ if [ "$MODE" = "--restore" ]; then
         ok=$((ok + 1))
       else
         echo "$pane $kind 尚未起來，stub 仍在待命，可自行到該 pane 按 Enter。"
-        keep_record "$pane" "$kind" "$name" "$session" "$cwd"
+        keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"
         fail=$((fail + 1))
       fi
     elif ! pane_at_prompt "$pane"; then
       echo "$pane 前景已有其他 process，留在紀錄中。"
-      keep_record "$pane" "$kind" "$name" "$session" "$cwd"
+      keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"
       fail=$((fail + 1))
-    elif herdr agent start "$name" --kind "$kind" --pane "$pane" -- --resume "$session" >/dev/null 2>&1; then
-      echo "$pane $kind 已復原（--resume ${session}）"
+    elif start_agent_with_argv "$name" "$kind" "$pane" "$argv" "$session"; then
+      echo "$pane $kind 已復原（${argv:+$argv }--resume ${session}）"
       rm -f "$(stub_path "$pane")"
       ok=$((ok + 1))
     else
-      echo "$pane $kind 復原失敗，可手動執行：herdr agent start $name --kind $kind --pane $pane -- --resume $session"
-      keep_record "$pane" "$kind" "$name" "$session" "$cwd"
+      echo "$pane $kind 復原失敗，可手動執行：${hint}"
+      keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"
       fail=$((fail + 1))
     fi
   done < "$RESTORE_LOG"
@@ -255,14 +342,14 @@ rows=()
 herdr_pids=""
 while IFS=$'\t' read -r kind pane status name session cwd title; do
   [ "$pane" = "$self_pane" ] && continue
-  read -r pid rss etime <<< "$(agent_row_of_pane "$pane" "$kind")"
+  read -r pid rss etime args <<< "$(agent_row_of_pane "$pane" "$kind")"
   [ -n "${pid:-}" ] || continue
   if is_ancestor "$pid"; then continue; fi
   herdr_pids="$herdr_pids $pid"
   [ -n "$name" ] || name=$kind
-  rows+=("$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+  rows+=("$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
     herdr "$kind" "$pane" "$status" "$pid" "$((rss / 1024))MB" "$etime" \
-    "$name" "$session" "${cwd/#$HOME/~}" "$title")")
+    "$name" "$session" "${cwd/#$HOME/~}" "$title" "$(replay_flags "$args")")")
 done < <(herdr agent list | jq -r '.result.agents[] |
   [.agent, .pane_id, .agent_status, .name // .agent, .agent_session.value // "",
    .cwd, .terminal_title_stripped] | @tsv')
@@ -275,7 +362,7 @@ while read -r pid _ppid rss etime args; do
   if is_ancestor "$pid"; then continue; fi
   case " $herdr_pids " in *" $pid "*) continue ;; esac
   cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
-  rows+=("$(printf '%s\t%s\t-\t-\t%s\t%s\t%s\t-\t-\t%s\t%s' \
+  rows+=("$(printf '%s\t%s\t-\t-\t%s\t%s\t%s\t-\t-\t%s\t%s\t-' \
     proc "$kind" "$pid" "$((rss / 1024))MB" "$etime" "${cwd/#$HOME/~}" \
     "$(echo "$args" | cut -c1-50)")")
 done < "$PS_DUMP"
@@ -285,7 +372,7 @@ if [ "${#rows[@]}" -eq 0 ]; then
   exit 0
 fi
 
-header_row=$'來源\tAGENT\tPANE\t狀態\tPID\tRSS\tUPTIME\tNAME\tSESSION\tCWD\t標題 / 指令'
+header_row=$'來源\tAGENT\tPANE\t狀態\tPID\tRSS\tUPTIME\tNAME\tSESSION\tCWD\t標題 / 指令\tARGV'
 if [ "$MODE" = "--list" ]; then
   { echo "$header_row"; printf '%s\n' "${rows[@]}"; } | cut -f"$FIELDS_SHOWN" | column -t -s$'\t'
   exit 0
@@ -306,7 +393,7 @@ read -r ans
 
 napped=()
 sig_pids=""
-while IFS=$'\t' read -r src kind pane _status pid rss _etime name session cwd _title; do
+while IFS=$'\t' read -r src kind pane _status pid rss _etime name session cwd _title argv; do
   if [ "$src" = "herdr" ]; then
     # agent_not_running 代表 /exit 已生效、wait 撲空，視為成功
     out=$(herdr agent prompt "$pane" "/exit" --wait --until unknown --timeout 20000 2>&1) || true
@@ -319,9 +406,9 @@ while IFS=$'\t' read -r src kind pane _status pid rss _etime name session cwd _t
       echo "$pane $kind 已退出，但 herdr 沒有回報 session id，這個對話無法自動復原。"
     else
       cwd="${cwd/#\~/$HOME}"
-      write_and_arm_stub "$pane" "$kind" "$name" "$session" "$cwd" "$rss"
-      echo "$pane $kind 已休眠（pane 保留，按 Enter 即可復原）"
-      napped+=("$(printf '%s\t%s\t%s\t%s\t%s' "$pane" "$kind" "$name" "$session" "$cwd")")
+      write_and_arm_stub "$pane" "$kind" "$name" "$session" "$cwd" "$rss" "$argv"
+      echo "$pane $kind 已休眠（pane 保留，按 Enter 即可復原${argv:+，復原時帶回 ${argv}}）"
+      napped+=("$(record_line "$pane" "$kind" "$name" "$session" "$cwd" "$argv")")
     fi
   else
     sig_pids="$sig_pids $pid"
