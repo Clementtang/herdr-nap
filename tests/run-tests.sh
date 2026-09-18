@@ -216,6 +216,15 @@ test_should_not_abort_under_errexit_when_timestamp_unparseable() {
   rm -rf "$d"
 }
 
+# ---------- FIELDS_SHOWN 同時要被 cut 與 fzf 接受 ----------
+test_should_use_field_list_that_both_cut_and_fzf_accept() {
+  local row; row=$(printf '1\t2\t3\t4\t5\t6\t7\t8\t9\t10\t11\t12\t13\t14\t15')
+  assert_eq $'1\t2\t3\t4\t5\t6\t7\t8\t9\t10' "$(printf '%s\n' "$row" | cut -f"$FIELDS_SHOWN")" cut
+  if command -v fzf >/dev/null; then
+    assert_eq "$row" "$(printf '%s\n' "$row" | fzf --filter=3 --delimiter=$'\t' --with-nth="$FIELDS_SHOWN")" fzf
+  fi
+}
+
 # ---------- stub_path ----------
 test_should_sanitize_pane_id_for_stub_filename() {
   STUB_DIR=/s

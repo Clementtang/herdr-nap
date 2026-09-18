@@ -19,7 +19,8 @@ STUB_DIR="$STATE_DIR/panes"
 #   11 etime 12 name 13 session 14 argv 15 idle_secs
 # 欄位不做 pad，之後要拿去打 herdr 的值保持原樣，對齊交給顯示層（--list 用
 # column -t、fzf 靠 tabstop）。fzf 預覽窗用 {3} 取 pane，動欄位順序時要一起改。
-FIELDS_SHOWN='1-10'
+# 這個值同時餵給 cut -f 與 fzf --with-nth，只能用逗號列舉：cut 的 1-10 fzf 不認。
+FIELDS_SHOWN='1,2,3,4,5,6,7,8,9,10'
 IDLE_SORT_FIELD=15
 SUBAGENT_ACTIVE_WINDOW=600   # 秒。subagent 紀錄在這段時間內更新過就標記
 JUST_STARTED_WINDOW=300      # 秒。剛啟動或剛復原的 agent 標記出來
@@ -230,16 +231,34 @@ restore_hint() {
 
 pane_exists() { herdr pane process-info --pane "$1" >/dev/null 2>&1; }
 
-# argv 逐 token 切開重播，關掉 globbing 以免 --add-dir * 這種值被展開成檔名
+pane_agent_status() {
+  herdr agent list 2>/dev/null | jq -r --arg p "$1" \
+    '.result.agents[] | select(.pane_id == $p) | .agent_status // ""'
+}
+
+# 復原後等 herdr 回報 session。沒等到時分兩種：agent 起來了但停在確認畫面
+# （實測 claude --resume 會跳工作區信任確認，herdr 回報 blocked），或真的沒起來。
+# 輸出 0 = 回來了、1 = 卡在確認畫面、2 = 沒起來
+resume_outcome() {
+  local pane=$1 session=$2
+  wait_for_session "$pane" "$session" && return 0
+  [ "$(pane_agent_status "$pane")" = blocked ] && return 1
+  return 2
+}
+blocked_hint() {
+  echo "$1 $2 已起來但停在確認畫面（例如工作區信任或權限確認），到該 pane 回答後即完成；紀錄保留，下次執行會自動清掉。"
+}
+
+# argv 逐 token 切開重播，關掉 globbing 以免 --add-dir * 這種值被展開成檔名。
+# 只輸出 herdr 的回應，不以退出碼論成敗：agent 啟動時卡在確認畫面，herdr 會
+# 立刻回 agent_not_ready（非零），但 process 其實已經起來了，成敗交給 resume_outcome 判斷。
 start_agent_with_argv() {
-  local name=$1 kind=$2 pane=$3 argv=$4 session=$5 rc
+  local name=$1 kind=$2 pane=$3 argv=$4 session=$5
   glob_off
   # shellcheck disable=SC2086
   set -- $argv
   glob_restore
-  herdr agent start "$name" --kind "$kind" --pane "$pane" -- "$@" --resume "$session" >/dev/null 2>&1
-  rc=$?
-  return "$rc"
+  herdr agent start "$name" --kind "$kind" --pane "$pane" -- "$@" --resume "$session" 2>&1 || true
 }
 
 stub_path() { echo "$STUB_DIR/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '_').sh"; }
@@ -416,27 +435,31 @@ if [ "$MODE" = "--restore" ]; then
       # stub 待命中：pane 不在 shell prompt 上，agent start 會被拒絕，
       # 送 Enter 讓 stub 自己 exec 成 agent
       herdr pane send-keys "$pane" enter >/dev/null 2>&1 || true
-      if wait_for_session "$pane" "$session"; then
-        echo "$pane $kind 已復原（stub 待命中，送出 Enter）"
-        rm -f "$(stub_path "$pane")"
-        ok=$((ok + 1))
-      else
-        echo "$pane $kind 尚未起來，stub 仍在待命，可自行到該 pane 按 Enter。"
-        keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"
-        fail=$((fail + 1))
-      fi
+      resume_outcome "$pane" "$session" && rc=0 || rc=$?
+      case "$rc" in
+        0) echo "$pane $kind 已復原（stub 待命中，送出 Enter）"
+           rm -f "$(stub_path "$pane")"; ok=$((ok + 1)) ;;
+        1) blocked_hint "$pane" "$kind"
+           keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"; fail=$((fail + 1)) ;;
+        *) echo "$pane $kind 尚未起來，stub 仍在待命，可自行到該 pane 按 Enter。"
+           keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"; fail=$((fail + 1)) ;;
+      esac
     elif ! pane_at_prompt "$pane"; then
       echo "$pane 前景已有其他 process，留在紀錄中。"
       keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"
       fail=$((fail + 1))
-    elif start_agent_with_argv "$name" "$kind" "$pane" "$argv" "$session"; then
-      echo "$pane $kind 已復原（${argv:+$argv }--resume ${session}）"
-      rm -f "$(stub_path "$pane")"
-      ok=$((ok + 1))
     else
-      echo "$pane $kind 復原失敗，可手動執行：${hint}"
-      keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"
-      fail=$((fail + 1))
+      out=$(start_agent_with_argv "$name" "$kind" "$pane" "$argv" "$session")
+      resume_outcome "$pane" "$session" && rc=0 || rc=$?
+      case "$rc" in
+        0) echo "$pane $kind 已復原（${argv:+$argv }--resume ${session}）"
+           rm -f "$(stub_path "$pane")"; ok=$((ok + 1)) ;;
+        1) blocked_hint "$pane" "$kind"
+           keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"; fail=$((fail + 1)) ;;
+        *) echo "$pane $kind 復原失敗，herdr 回應：${out}"
+           echo "  可手動執行：${hint}"
+           keep_record "$pane" "$kind" "$name" "$session" "$cwd" "$argv"; fail=$((fail + 1)) ;;
+      esac
     fi
   done < "$RESTORE_LOG"
   mv "$RESTORE_LOG.tmp" "$RESTORE_LOG"

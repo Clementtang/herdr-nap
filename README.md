@@ -16,6 +16,7 @@ herdr-nap --restore  復原先前清理掉的 herdr agent
 - 休眠後 pane 裡會留一個待命 stub，顯示釋放了多少記憶體與 session id，**按 Enter 就地復原**、Ctrl-C 回到一般 shell。整批復原走 `--restore`，對 stub 待命中的 pane 送 Enter，對已回到 shell prompt 的 pane 走 `herdr agent start <name> --kind <kind> --pane <pane> -- <原啟動旗標> --resume <session-id>`。兩條路都不遺失對話。
 - **復原時帶回原本的啟動旗標**（例如 `--dangerously-skip-permissions`、`--model`）。休眠時從 ps 取 agent 的 argv，去掉 `--resume`/`-r`/`-c`/`--session-id`/`--fork-session` 這類接續 session 的旗標與裸位置參數（多半是啟動 prompt，重播會被當成新訊息），其餘存進紀錄第 6 欄。舊的 5 欄紀錄照常可讀，argv 視為空。
 - pane 已經被關掉（或整個 workspace 沒了）的紀錄，`--restore` 會明講「已不存在」並給開新 pane 復原的指令，紀錄保留。
+- 復原不一定全自動：實測 `claude --dangerously-skip-permissions --resume` 起來後會先跳「工作區信任」確認畫面，herdr 回報 blocked。兩條復原路徑都會偵測這個狀態並提示到該 pane 回答，紀錄保留到 session 真的回來為止。工具不會替你回答任何確認畫面。
 - 自己在 pane 裡按 Enter 復原之後不必收拾，下次執行時過期紀錄與 stub 檔會自動清掉。判斷依據是 herdr 回報的 session id 與紀錄相符，**不是**「這個 pane 有同類 agent 在跑」。
 - pane 已經被別的 session 佔用時不會當成復原成功：報告衝突、紀錄留著，並附上換 pane 復原的指令。休眠中的 session id 只存在紀錄裡，刪掉就再也找不回來。
 - herdr 沒有回報 session id 的 agent，退出後不寫紀錄也不留 stub，並明講這個對話無法自動復原。
@@ -70,7 +71,9 @@ tests/run-tests.sh
 - **ps 的 argv 看不到原本的引號**，含空白的旗標值拆成多個 token 後只會留第一個；裸位置參數一律丟掉，布林旗標後面跟著的位置參數也丟（靠已知布林旗標清單判斷，清單以空白或換行分隔，比對時兩種都要吃）。重播 argv 時要關 globbing，`--add-dir *` 這種值才不會被展開成檔名。
 - **對話紀錄 jsonl 的 mtime 不能當閒置依據**：Claude Code 會回頭改寫閒置 session 的檔案（實測最後訊息 9/15 的檔案 mtime 是 9/18），全部 agent 都會顯示成幾十分鐘內活動過。要讀最後幾行裡最大的 `timestamp`（claude 是 ISO 8601 UTC，grok 是 epoch 秒），尾端可能有幾行沒 timestamp 的帳目列。
 - **session 檔用 session id 直接 glob**，不要自己推 cwd 的編碼：claude 把 `/` 換成 `-`，grok 走 percent-encoding，而且 grok 的 code-review session 存在 `~/.grok/worktrees/...` 的編碼底下，跟 herdr 回報的 cwd 對不上。uuid 唯一，glob 一次就到。
-- **`cut -f` 只會照升冪輸出欄位**，顯示順序就是資料欄順序，所以要顯示的欄位排前面、隱藏欄排後面；fzf 預覽窗用 `{3}` 取 pane，動欄位順序時要一起改。
+- **`cut -f` 只會照升冪輸出欄位**，顯示順序就是資料欄順序，所以要顯示的欄位排前面、隱藏欄排後面；fzf 預覽窗用 `{3}` 取 pane，動欄位順序時要一起改。同一個欄位清單同時餵 `cut -f` 與 fzf `--with-nth`，只能用逗號列舉，cut 的 `1-10` fzf 不認（互動模式會直接失敗，`--list` 看不出來）。測試用 `fzf --filter` 非互動驗證這個表達式。
+- **`herdr agent start` 的退出碼不能當復原成敗**：agent 啟動時卡在確認畫面（例如工作區信任），herdr 立刻回 `agent_not_ready` 非零，但 process 已經起來。成敗一律以 `herdr agent list` 回報的 session id 為準，blocked 另外提示。
+- **非互動測試互動模式**：`FZF_DEFAULT_OPTS="--exact --filter=<pane>" herdr-nap <<< y` 會走完整的休眠流程（fzf 在 filter 模式不佔 TTY），適合對指定 pane 做端到端實測。
 - 閒置的 claude agent 底下沒有常駐子行程（14 個實測子孫數 0），`/exit` 後也沒有留下孤兒 MCP process，所以不做 kill 整棵樹。子行程加總只影響 RSS 顯示與「子行程N」標記。
 
 ## 已知限制
