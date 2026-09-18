@@ -31,6 +31,10 @@ JUST_STARTED_WINDOW=300      # 秒。剛啟動或剛復原的 agent 標記出來
 
 need() { command -v "$1" >/dev/null || { echo "找不到 $1 指令。" >&2; exit 1; }; }
 
+# 以 herdr plugin 身分執行時 PATH 不一定有 herdr，但 herdr 會給 HERDR_BIN_PATH
+HERDR_BIN=${HERDR_BIN_PATH:-herdr}
+herdr() { command "$HERDR_BIN" "$@"; }
+
 # 整份 ps 只拍一次快照，找直屬子 process、RSS、etime、散裝行程都從這份取。
 # 需要當下狀態時（送出 /exit 或 resume 之後）由呼叫端明確 refresh。
 PS_DUMP=""
@@ -400,7 +404,7 @@ case "$MODE" in
     ;;
 esac
 
-need herdr
+need "$HERDR_BIN"
 need jq
 # fzf 只有互動挑選用得到，--list 與 --restore 不該被它擋住
 [ -n "$MODE" ] || need fzf

@@ -1,0 +1,53 @@
+# herdr-nap 的 herdr plugin manifest。
+# 安裝：herdr plugin install Clementtang/herdr-nap --yes
+# 本機開發：herdr plugin link ~/herdr-nap
+#
+# 需要的系統工具：jq、fzf（herdr 的 manifest 沒有相依欄位，請自行安裝）。
+# 狀態檔一律放 ~/.local/state/herdr-nap/，不放 HERDR_PLUGIN_STATE_DIR：
+# 同一份紀錄要讓 plugin 與直接執行 ~/bin/herdr-nap 的人共用。
+
+id = "clementtang.herdr-nap"
+name = "Herdr Nap"
+version = "0.2.0"
+min_herdr_version = "0.9.0"
+description = "手動挑選閒置 agent 送 /exit 休眠釋放記憶體，pane 留 stub 按 Enter 就地復原。"
+platforms = ["macos", "linux"]
+
+# 互動挑選要 fzf 佔 TTY，所以是 pane 不是 action。pane 的 cwd 是使用者的工作目錄，
+# 腳本路徑一定要用 $HERDR_PLUGIN_ROOT。
+[[panes]]
+id = "nap"
+title = "Herdr Nap"
+placement = "overlay"
+command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/herdr-nap\""]
+
+[[panes]]
+id = "restore"
+title = "Herdr Nap: 復原"
+placement = "overlay"
+command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/herdr-nap\" --restore"]
+
+[[panes]]
+id = "list"
+title = "Herdr Nap: 清單"
+placement = "overlay"
+command = ["bash", "-c", "bash \"$HERDR_PLUGIN_ROOT/herdr-nap\" --list; printf '\\n按 Enter 關閉'; read -r _"]
+
+# action 只負責把對應的 pane 叫出來
+[[actions]]
+id = "nap"
+title = "Nap: 挑選 agent 休眠"
+contexts = ["workspace"]
+command = ["bash", "-c", "exec \"$HERDR_BIN_PATH\" plugin pane open --plugin \"$HERDR_PLUGIN_ID\" --entrypoint nap --focus"]
+
+[[actions]]
+id = "restore"
+title = "Nap: 整批復原"
+contexts = ["workspace"]
+command = ["bash", "-c", "exec \"$HERDR_BIN_PATH\" plugin pane open --plugin \"$HERDR_PLUGIN_ID\" --entrypoint restore --focus"]
+
+[[actions]]
+id = "list"
+title = "Nap: 只列出"
+contexts = ["workspace"]
+command = ["bash", "-c", "exec \"$HERDR_BIN_PATH\" plugin pane open --plugin \"$HERDR_PLUGIN_ID\" --entrypoint list --focus"]

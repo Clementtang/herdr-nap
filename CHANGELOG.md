@@ -12,6 +12,7 @@
 - 新增「備註」欄：子行程數、subagent 活動中、剛啟動、無對話紀錄。只標記不擋。
 - fzf 預覽窗顯示游標所在 pane 的目前畫面，Ctrl-/ 切換。
 - `tests/run-tests.sh`：純函式測試，不依賴 bats。腳本支援 `HERDR_NAP_LIB_ONLY=1` 只載入函式。
+- `herdr-plugin.toml`：可用 `herdr plugin install Clementtang/herdr-nap` 安裝，三個 overlay pane 入口（挑選、復原、清單）加對應 action。腳本改走 `HERDR_BIN_PATH` 呼叫 herdr，plugin 環境下 PATH 沒有 herdr 也能跑。
 - 釘選排除：`~/.config/herdr-nap/exclude` 的字樣比對 pane 標題與 tab 標籤，命中的 agent 不進 fzf 清單，`--list` 灰顯並標「釘選」。
 - `--restore` 偵測 agent 起來後卡在確認畫面（herdr 回報 blocked）的狀態並明講，不再誤報失敗或成功。
 

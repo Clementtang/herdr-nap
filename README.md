@@ -25,7 +25,16 @@ herdr-nap --restore  復原先前清理掉的 herdr agent
 - 防呆：排除自身 pane、清理前 y/N 確認、逐一驗證退出並回報、復原紀錄存 `~/.local/state/herdr-nap/napped.tsv`、stub 存 `~/.local/state/herdr-nap/panes/`。
 - `--list` 是唯讀模式，不動狀態檔；依賴檢查按 mode 做，沒裝 fzf 仍能 `--list` 與 `--restore`。
 
-安裝方式：`~/bin/herdr-nap` symlink 到本專案的 `herdr-nap`，改這裡即生效。
+## 安裝
+
+需要 `jq` 與 `fzf`（`brew install jq fzf`）。herdr 的 plugin manifest 沒有相依欄位，請自行安裝。
+
+兩種裝法，狀態檔共用 `~/.local/state/herdr-nap/`，可以並存：
+
+- **herdr plugin**（給其他 herdr 使用者）：`herdr plugin install Clementtang/herdr-nap --yes`。裝完在 plugin action 選單有三個動作：「Nap: 挑選 agent 休眠」「Nap: 整批復原」「Nap: 只列出」，各自在 overlay pane 裡開啟。更新就再跑一次 install（herdr 0.9 沒有 plugin update 指令）。
+- **直接執行**：`~/bin/herdr-nap` symlink 到本專案的 `herdr-nap`，改這裡即生效。
+
+本機開發 plugin 用 `herdr plugin link ~/herdr-nap`（不會跑 build，manifest 直接指向工作目錄，改完即生效），`herdr plugin unlink clementtang.herdr-nap` 移除。互動挑選要 fzf 佔 TTY，所以 manifest 裡三個入口都宣告成 `[[panes]]`，action 只負責 `herdr plugin pane open` 把 pane 叫出來；pane 的 cwd 是使用者的工作目錄，腳本路徑一律走 `$HERDR_PLUGIN_ROOT`，呼叫 herdr 走 `$HERDR_BIN_PATH`。
 
 開發環境（新 clone 或換機器時要跑一次，`core.hooksPath` 是本機 config，不跟著 repo 走）：
 
