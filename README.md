@@ -29,6 +29,14 @@ git config core.hooksPath githooks
 
 `githooks/pre-commit` 會擋下 bash 腳本裡變數緊貼非 ASCII 字元的寫法（見下方實作要點最後一項）。
 
+## herdr server 重啟後會怎樣（實測，2026-09-18）
+
+- herdr 的持久化檔 `~/.config/herdr/session.json` 對每個 pane 只存 cwd，pane 上有 agent 時才多存 `agent_session`。已休眠的 pane（不論 stub 待命中或已回 shell）沒有 `agent_session`。
+- 8/26 與 9/4 休眠的 pane 經過 9/1、9/9 兩次重啟後：pane id 不變（session.json 有 `public_pane_numbers` 對照表）、cwd 不變、變成空 shell、stub 消失、agent 沒有被拉起。
+- 所以重啟不會讓休眠的 agent 回來吃記憶體，只會失去 pane 裡按 Enter 的捷徑；`--restore` 對停在 shell prompt 的 pane 本來就走 `herdr agent start`，不需要 shell hook，也不動 `.zshrc`。
+- herdr 自己重啟時拉起活著的 agent 用的是 `claude --resume <uuid>`，原本的啟動旗標一樣會掉。這是 herdr 的行為，本工具管不到。
+- 需要隔離的 herdr server 做實驗時，用具名 session（`herdr --session <name>`，獨立目錄與 socket，CLI 靠 `HERDR_SOCKET_PATH` 指向），不要重啟主 server。
+
 ## 實作要點（踩過的坑）
 
 - **資料源是 `herdr agent list`** 的 `.result.agents[]`：agent 種類、`agent_status`（idle / working / done / blocked / unknown）、`pane_id`、`cwd`、`agent_session.value`（resume 用的 session id）、optional `name`（rename 過的 agent 名，restore 時要帶回）、terminal title；沒有 PID。
