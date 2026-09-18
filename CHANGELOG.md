@@ -6,6 +6,15 @@
 
 ### Fixed
 
+- Grok 第二輪審查（反對者立場）抓到的問題：
+  - `/exit` 後紀錄要到整批結束才寫檔，中途失敗會弄丟已睡掉的 session id。改成確認退出後立刻逐筆寫入，stub 種不起來只回報。
+  - 送 `/exit` 前沒重讀 pane 當下的 session；fzf 停留期間換人會請走別的 session。改成動手前重核對，變了就略過。
+  - `IFS=tab read` 會合併連續 tab，紀錄中間空欄會讓後面欄位位移。空欄改寫 `-`。
+  - `napped.tsv` 沒有鎖，nap 與 `--restore` 同時跑會互相蓋檔。加 mkdir 鎖，`--restore` 改成只刪復原成功的 pane。
+  - SIGTERM 前沒確認 PID 仍是當初那個 claude/grok。改成 kill 前重認 argv0 與 herdr 樹。
+  - fzf 預覽窗用字面 `herdr`，plugin 環境找不到。改嵌 `$HERDR_BIN`。
+  - Linux 沒有 `date -j`，閒置時間會退回 process 年齡。加 `date -d` 後備。
+  - 對話紀錄路徑含空白時 glob 結果被切開。改逐行傳遞。
 - 在 herdr pane 裡但 herdr 尚未辨識成 agent 的 claude/grok（例如 stub resume 後卡在信任確認、或偵測延遲）不再被誤判成「herdr 之外」而列進 SIGTERM 清單。改以「祖先鏈是否含 herdr server」判斷，這種 process 列成來源 `herdr?`、備註「herdr未辨識」，勾了也不動它。
 - `--list` 與確認清單裡空欄位會被 `column -t` 吞掉、後面欄位往前擠；顯示前補成 `-`。
 

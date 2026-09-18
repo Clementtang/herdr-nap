@@ -109,20 +109,53 @@ test_should_round_trip_through_eval() {
 test_should_write_six_tab_fields() {
   assert_eq $'w1:p1\tclaude\tname\tSID\t/tmp\t--bg' "$(record_line w1:p1 claude name SID /tmp --bg)"
 }
+test_should_write_dash_for_empty_fields_so_read_does_not_shift() {
+  # bash 的 IFS=tab read 會合併連續 tab，空欄不補 - 整列就位移
+  local pane kind name session cwd argv
+  IFS=$'\t' read -r pane kind name session cwd argv <<< "$(record_line w1:p1 claude claude SID "" --bg)"
+  assert_eq "SID" "$session" session
+  assert_eq "" "$(undash "$cwd")" cwd-empty
+  assert_eq "--bg" "$(undash "$argv")" argv
+  assert_eq "" "$(undash -)" undash-dash
+  assert_eq "/x" "$(undash /x)" undash-plain
+}
 test_should_read_old_five_field_record_with_empty_argv() {
   local pane kind name session cwd argv
   IFS=$'\t' read -r pane kind name session cwd argv <<< $'w1:p1\tclaude\tclaude\tSID\t/tmp'
   assert_eq "/tmp" "$cwd" cwd
   assert_eq "" "$argv" argv
 }
-test_should_merge_records_keeping_latest_per_pane() {
-  local old new merged
-  old=$(record_line w1:p1 claude claude OLD /a ""; record_line w2:p1 grok grok KEEP /b "")
-  new=$(record_line w1:p1 claude claude NEW /a --bg)
-  # 與主程式相同的合併方式：新批次的 pane 蓋掉舊的，其餘保留
-  merged=$( { awk -F'\t' 'NR == FNR { seen[$1]; next } !($1 in seen)' \
-    <(printf '%s\n' "$new") <(printf '%s\n' "$old"); printf '%s\n' "$new"; } )
-  assert_eq $'w2:p1\tgrok\tgrok\tKEEP\t/b\t\nw1:p1\tclaude\tclaude\tNEW\t/a\t--bg' "$merged"
+with_temp_state() {   # 讓紀錄相關函式寫到暫存目錄
+  STATE_DIR=$(mktemp -d); RESTORE_LOG="$STATE_DIR/napped.tsv"; LOCK_DIR="$STATE_DIR/.lock"; HOLDING_LOCK=0
+}
+test_should_upsert_record_replacing_same_pane_and_keeping_others() {
+  with_temp_state
+  upsert_record w1:p1 "$(record_line w1:p1 claude claude OLD /a "")"
+  upsert_record w2:p1 "$(record_line w2:p1 grok grok KEEP /b "")"
+  upsert_record w1:p1 "$(record_line w1:p1 claude claude NEW /a --bg)"
+  assert_eq $'w2:p1\tgrok\tgrok\tKEEP\t/b\t-\nw1:p1\tclaude\tclaude\tNEW\t/a\t--bg' "$(cat "$RESTORE_LOG")"
+  [ -d "$LOCK_DIR" ] && assert_eq "lock released" "lock left behind" || assert_eq 1 1
+  rm -rf "$STATE_DIR"
+}
+test_should_remove_only_listed_panes() {
+  with_temp_state
+  upsert_record w1:p1 "$(record_line w1:p1 claude claude A /a "")"
+  upsert_record w2:p1 "$(record_line w2:p1 claude claude B /b "")"
+  upsert_record w3:p1 "$(record_line w3:p1 claude claude C /c "")"
+  remove_records "w1:p1 w3:p1"
+  assert_eq $'w2:p1\tclaude\tclaude\tB\t/b\t-' "$(cat "$RESTORE_LOG")"
+  remove_records ""; assert_eq $'w2:p1\tclaude\tclaude\tB\t/b\t-' "$(cat "$RESTORE_LOG")" empty-list-noop
+  rm -rf "$STATE_DIR"
+}
+test_should_give_up_on_lock_held_by_someone_else_and_break_stale_lock() {
+  with_temp_state; LOCK_WAIT_SECS=1
+  mkdir -p "$LOCK_DIR"
+  upsert_record w1:p1 "$(record_line w1:p1 claude claude A /a "")" 2>/dev/null; assert_eq 1 $? busy
+  [ -f "$RESTORE_LOG" ] && assert_eq "no write" "wrote anyway" || assert_eq 1 1
+  # 60 秒沒動的鎖視為殘留，可以打破
+  touch -t 202601010000 "$LOCK_DIR"
+  upsert_record w1:p1 "$(record_line w1:p1 claude claude A /a "")"; assert_eq 0 $? stale-broken
+  LOCK_WAIT_SECS=30; rm -rf "$STATE_DIR"
 }
 
 # ---------- fmt_age / etime_to_secs ----------
@@ -154,6 +187,14 @@ test_should_read_last_timestamp_not_mtime() {
   assert_eq "" "$(last_entry_epoch "$d/none.jsonl")" no-timestamp
   assert_eq "" "$(last_entry_epoch "$d/missing")" missing
   rm -rf "$d"
+}
+test_should_handle_spaces_in_transcript_paths() {
+  local real_home=$HOME tmp; tmp=$(mktemp -d); HOME=$tmp
+  mkdir -p "$HOME/.claude/projects/-Users-foo-My Project"
+  printf '{"timestamp":"2026-06-01T00:00:00Z"}\n' > "$HOME/.claude/projects/-Users-foo-My Project/sid.jsonl"
+  local main sub; read -r main sub <<< "$(session_epochs claude sid)"
+  assert_eq "$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' 2026-06-01T00:00:00 +%s)" "$main"
+  HOME=$real_home; rm -rf "$tmp"
 }
 test_should_pick_newest_entry_across_files() {
   local d; d=$(mktemp -d)
@@ -259,6 +300,14 @@ message_keys() {
 test_should_have_identical_keys_in_both_message_tables() {
   assert_eq "$(message_keys msg_zh)" "$(message_keys msg_en)"
   [ "$(message_keys msg_zh | wc -l | tr -d ' ')" -gt 40 ] && assert_eq 1 1 || assert_eq "many keys" "few keys"
+}
+test_should_have_same_placeholder_count_in_both_languages() {
+  local key zh en
+  for key in $(message_keys msg_zh); do
+    zh=$(msg_zh "$key" | grep -o '%s' | wc -l | tr -d ' ')
+    en=$(msg_en "$key" | grep -o '%s' | wc -l | tr -d ' ')
+    assert_eq "$zh" "$en" "$key"
+  done
 }
 test_should_render_message_in_selected_language() {
   NAP_LANG=zh; assert_eq "w1:p1 claude 已在執行中，紀錄清除。" "$(t already_running w1:p1 claude)" zh
