@@ -12,9 +12,6 @@
 ### Added
 
 - 前景是 `ssh`/`mosh` 的 pane 列成來源 `remote`（唯讀），提示 agent 在另一台機器上。
-
-### Added
-
 - 英文訊息。依 `LC_ALL`/`LC_MESSAGES`/`LANG` 判斷，`zh` 開頭顯示繁體中文，其餘英文；`HERDR_NAP_LANG` 可強制。訊息集中成 `msg_zh`、`msg_en` 兩張表，測試比對 key 一致。
 
 ## [0.2.0] - 2026-09-18
