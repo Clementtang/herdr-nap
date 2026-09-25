@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 執行 herdr-nap 所在 pane 的 agent 會被當成 `herdr?`（herdr未辨識）列在清單最底。自身 pane 跳過時沒把 PID 記進 herdr 列，散裝 process 那一輪又撿回來；從 plugin 啟動時 agent 不在祖先鏈上，擋不住。
+
 ### Docs
 
 - README 精簡成安裝、用法、限制；實測數據、實作要點、開發設定原文搬到 `docs/internals.md`。

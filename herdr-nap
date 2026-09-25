@@ -748,14 +748,15 @@ patterns=$(exclude_patterns "$EXCLUDE_FILE")
 # tab 標籤（side bar 顯示的名字）一次拉齊，釘選比對要用
 tab_labels=$(herdr tab list 2>/dev/null | jq -r '.result.tabs[] | [.tab_id, .label // ""] | @tsv')
 while IFS=$'\t' read -r kind pane tab status name session cwd title; do
-  [ "$pane" = "$self_pane" ] && continue
+  read -r pid _rss etime args <<< "$(agent_row_of_pane "$pane" "$kind")"
+  [ -n "${pid:-}" ] || continue
+  # 自身 pane 也要先記進 herdr_pids 再跳過：從 plugin 啟動時 agent 不在祖先鏈上，
+  # 漏記的話下面散裝 process 那一輪會把它當成 herdr? 列出來
+  herdr_pids="$herdr_pids $pid"
+  if [ "$pane" = "$self_pane" ] || is_ancestor "$pid"; then continue; fi
   label=$(printf '%s\n' "$tab_labels" | awk -F'\t' -v t="$tab" '$1 == t { print $2; exit }')
   pinned=0
   if is_pinned "$patterns" "$title" "$label"; then pinned=1; pinned_panes="$pinned_panes $pane"; fi
-  read -r pid _rss etime args <<< "$(agent_row_of_pane "$pane" "$kind")"
-  [ -n "${pid:-}" ] || continue
-  if is_ancestor "$pid"; then continue; fi
-  herdr_pids="$herdr_pids $pid"
   [ -n "$name" ] || name=$kind
   read -r rss desc_count <<< "$(tree_rss_of_pid "$pid")"
   # 閒置 = 對話紀錄最後一筆到現在；沒有紀錄就退回 process 年齡
