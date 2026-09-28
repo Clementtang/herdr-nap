@@ -235,6 +235,22 @@ inside_herdr_tree() {
   return 1
 }
 
+# pid 的祖先鏈裡有沒有另一個 claude / grok。有就是 agent 派出去的 subagent
+# （例如 worktree 裡的 headless claude），已算進父 agent 的子行程，不單獨列。
+under_another_agent() {
+  local pid=$1 depth=0 line a
+  pid=$(awk -v x="$pid" '$1 == x { print $2; exit }' "$PS_DUMP")
+  while [ "${pid:-0}" -gt 1 ] && [ "$depth" -lt 20 ]; do
+    line=$(awk -v x="$pid" '$1 == x { print; exit }' "$PS_DUMP")
+    [ -n "$line" ] || return 1
+    a=$(printf '%s' "$line" | awk '{ print $5 }'); a=${a##*/}
+    case "$a" in claude|grok) return 0 ;; esac
+    pid=$(printf '%s' "$line" | awk '{ print $2 }')
+    depth=$((depth + 1))
+  done
+  return 1
+}
+
 # 整棵 process 樹（root 加上所有子孫）的 RSS 合計與子孫數，輸出 "total_kb desc_count"。
 # agent 本體的 RSS 不含 MCP server 與工具起的子行程，只看本體會低估。
 tree_rss_of_pid() {
@@ -781,6 +797,7 @@ while read -r pid _ppid rss etime args; do
   case "$argv0" in claude|grok) kind=$argv0 ;; *) continue ;; esac
   if is_ancestor "$pid"; then continue; fi
   case " $herdr_pids " in *" $pid "*) continue ;; esac
+  if under_another_agent "$pid"; then continue; fi
   cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
   read -r rss _desc_count <<< "$(tree_rss_of_pid "$pid")"
   # 在 herdr pane 裡但 herdr 沒辨識成 agent（resume 卡在確認畫面、偵測延遲）：

@@ -7,6 +7,7 @@
 ### Fixed
 
 - 執行 herdr-nap 所在 pane 的 agent 會被當成 `herdr?`（herdr未辨識）列在清單最底。自身 pane 跳過時沒把 PID 記進 herdr 列，散裝 process 那一輪又撿回來；從 plugin 啟動時 agent 不在祖先鏈上，擋不住。
+- agent 派出去的 subagent（例如 worktree 裡的 headless claude）會被列成 `herdr?`，PANE 為 `-`。祖先鏈上有 claude／grok 的 process 已算進父 agent 的子行程，現在不單獨列出。
 
 ### Docs
 
