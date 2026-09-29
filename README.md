@@ -46,6 +46,15 @@ herdr-nap --restore  bring every napped agent back
 
 Safety: your own pane is excluded, every nap is confirmed, every exit is verified, and records are written one at a time under a lock.
 
+### For other plugins: which session is napping in a pane
+
+While napping, herdr reports the pane with no `agent` and no `agent_session`. The session id is kept in `${XDG_STATE_HOME:-~/.local/state}/herdr-nap/napped.tsv`, which is a stable interface:
+
+- One line per pane, tab-separated, no header: `pane_id  kind  name  session_id  cwd  argv`. An empty value is written as `-`.
+- Column order does not change; new columns are only appended at the end.
+- The file is replaced by rename, so a reader never sees a half-written file.
+- A record can outlive its nap (after a herdr restart the stub is gone but the line stays until the next nap or restore). Trust a line only when herdr also reports that pane's `agent` as null.
+
 ### Known limitations
 
 - Resuming with Enter starts the agent from the stub, so a custom agent name is lost; `--restore` brings it back.
@@ -86,6 +95,15 @@ herdr-nap --restore  整批復原
 - **語言**：`LANG`（或 `LC_ALL`、`LC_MESSAGES`）以 `zh` 開頭顯示繁體中文，其餘英文；`HERDR_NAP_LANG=en|zh` 可強制。
 
 防呆：排除自己的 pane、每次休眠都確認、每個退出都驗證、紀錄逐筆在鎖下寫入。
+
+### 給其他 plugin：查 pane 裡睡著的是哪個 session
+
+休眠中的 pane，herdr 回報的 `agent` 與 `agent_session` 都是 null。session id 存在 `${XDG_STATE_HOME:-~/.local/state}/herdr-nap/napped.tsv`，這個檔案是穩定的對外介面：
+
+- 一行一個 pane，tab 分隔，沒有標頭：`pane_id  kind  name  session_id  cwd  argv`。空值寫成 `-`。
+- 欄位順序不變，新欄位只加在最後。
+- 整檔以 rename 替換，讀的一方不會讀到寫一半的內容。
+- 紀錄可能比休眠活得久（herdr 重啟後 stub 消失，紀錄要等下次休眠或復原才清掉）。herdr 同時回報該 pane 的 `agent` 為 null 時，這行才算數。
 
 ### 已知限制
 

@@ -11,6 +11,7 @@
 
 ### Docs
 
+- `napped.tsv` 定為對外介面：README 寫明路徑、欄位、只往後加欄位的承諾與判讀規則，讓其他 plugin（例如 herdr-shelf）查得到睡著的 pane 原本是哪個 session。
 - README 精簡成安裝、用法、限制；實測數據、實作要點、開發設定原文搬到 `docs/internals.md`。
 
 ## [0.2.1] - 2026-09-19
