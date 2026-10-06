@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-06
+
 ### Fixed
 
 - 沒帶任何旗標啟動的 agent 休眠後，按 Enter 復原會自動送出一串數字當 prompt。nap 迴圈以 `IFS=tab read` 讀選中的列，空的 argv 欄被合併，閒置秒數位移進 argv，寫進 stub 成為 `claude '<秒數>' --resume`。改為先補 `-` 再讀。既有紀錄與 stub 需手動清掉數字（0.2.1 只修了 `--restore` 的同類問題）。
