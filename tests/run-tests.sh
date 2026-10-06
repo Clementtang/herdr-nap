@@ -119,6 +119,16 @@ test_should_write_dash_for_empty_fields_so_read_does_not_shift() {
   assert_eq "" "$(undash -)" undash-dash
   assert_eq "/x" "$(undash /x)" undash-plain
 }
+test_should_not_shift_idle_secs_into_argv_when_selected_row_has_no_flags() {
+  # nap 迴圈讀 fzf 選中的列：沒帶旗標的 agent argv 是空的，曾讓閒置秒數變成 stub 的 prompt
+  local src kind pane st pid rss idle risk cwd title etime name session argv idle_secs pinned row
+  row=$'herdr\tclaude\tw5:pJ\tidle\t8651\t104MB\t4d6h\t-\t~/x\tt\t04-06:00:00\tclaude\tSID\t\t369116\t0'
+  IFS=$'\t' read -r src kind pane st pid rss idle risk cwd title etime name session argv idle_secs pinned \
+    < <(printf '%s\n' "$row" | fill_empty_fields)
+  assert_eq "" "$(undash "$argv")" argv-empty
+  assert_eq "369116" "$idle_secs" idle-secs
+  assert_eq "SID" "$session" session
+}
 test_should_read_old_five_field_record_with_empty_argv() {
   local pane kind name session cwd argv
   IFS=$'\t' read -r pane kind name session cwd argv <<< $'w1:p1\tclaude\tclaude\tSID\t/tmp'

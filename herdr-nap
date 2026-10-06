@@ -874,6 +874,10 @@ sig_pids=""
 # 使用者在 fzf 裡可能停很久，清單是舊快照：動手前重拍 ps、逐筆重核對
 refresh_ps_dump
 while IFS=$'\t' read -r src kind pane _status pid rss _idle _risk cwd title _etime name session argv _idle_secs _pinned; do
+  # 空欄先補成 - 才讀（見迴圈尾），這裡還原。沒帶旗標的 agent argv 是空的，
+  # 不補的話 IFS=tab 會合併連續 tab，閒置秒數位移進 argv，被寫進 stub 當成 prompt 送出
+  name=$(undash "$name"); session=$(undash "$session"); cwd=$(undash "$cwd")
+  title=$(undash "$title"); argv=$(undash "$argv")
   if [ "$src" = "herdr" ]; then
     # /exit 是對 pane 送的：pane 上的 session 若已換人，送下去會請走別人
     running=$(running_session_of_pane "$pane")
@@ -912,7 +916,7 @@ while IFS=$'\t' read -r src kind pane _status pid rss _idle _risk cwd title _eti
     sig_pids="$sig_pids $pid"
     kill "$pid" 2>/dev/null || true
   fi
-done <<< "$selected"
+done < <(printf '%s\n' "$selected" | fill_empty_fields)
 
 if [ -n "$sig_pids" ]; then
   sleep 2
