@@ -39,6 +39,7 @@ herdr-nap --restore  bring every napped agent back
 
 - **Nap**: the agent is asked to `/exit`, the pane stays, and a stub in the pane shows what was freed. **Press Enter there to resume in place**, Ctrl-C to get a shell. The pane title becomes `[nap] <original title>` while it waits.
 - **Restore**: `--restore` wakes everything at once and replays the original launch flags (for example `--dangerously-skip-permissions`). If the pane is gone or holds another session, the record is kept and the command to restore elsewhere is printed. If the agent stops at a trust or permission prompt, you are told to answer it in the pane; the tool never answers for you.
+- **After a herdr restart or reboot**: stubs are processes, so they die with herdr, but records and pane ids survive. The plugin's startup hook runs `--rearm`, which puts a stub back into every napped pane that is still at a shell prompt, so Enter works again. Panes that are gone, busy, or already running that session are left alone. Without the plugin, run `herdr-nap --rearm` yourself.
 - **List**: sorted by idle time (last transcript entry, not process age), RSS is the whole process tree, and a notes column flags `children:N`, `subagent-active`, `just-started`, `no-transcript`. A preview of the highlighted pane sits below the list (Ctrl-/ toggles it).
 - **Pinned**: put substrings in `~/.config/herdr-nap/exclude`, one per line; agents whose pane title or tab label matches never enter the picker.
 - **Outside herdr**: `claude`/`grok` started outside herdr get SIGTERM instead. Agents inside a herdr pane that herdr has not registered, and panes running `ssh`/`mosh` to another machine, are listed read-only.
@@ -50,10 +51,10 @@ Safety: your own pane is excluded, every nap is confirmed, every exit is verifie
 
 While napping, herdr reports the pane with no `agent` and no `agent_session`. The session id is kept in `${XDG_STATE_HOME:-~/.local/state}/herdr-nap/napped.tsv`, which is a stable interface:
 
-- One line per pane, tab-separated, no header: `pane_id  kind  name  session_id  cwd  argv`. An empty value is written as `-`.
+- One line per pane, tab-separated, no header: `pane_id  kind  name  session_id  cwd  argv  title`. Records written before 0.2.4 have no `title`. An empty value is written as `-`.
 - Column order does not change; new columns are only appended at the end.
 - The file is replaced by rename, so a reader never sees a half-written file.
-- A record can outlive its nap (after a herdr restart the stub is gone but the line stays until the next nap or restore). Trust a line only when herdr also reports that pane's `agent` as null.
+- A record can outlive its nap (for example after you leave a stub with Ctrl-C, or when its pane is closed; the line stays until that session comes back or `--restore` succeeds). Trust a line only when herdr also reports that pane's `agent` as null.
 
 ### Known limitations
 
@@ -89,6 +90,7 @@ herdr-nap --restore  整批復原
 
 - **休眠**：對 agent 送 `/exit`，pane 保留，pane 裡留一個 stub 顯示釋放多少記憶體。**在 pane 裡按 Enter 就地復原**，Ctrl-C 回到 shell。待命時 pane 標題變成 `[nap] 原標題`。
 - **復原**：`--restore` 一次叫醒全部，並帶回原本的啟動旗標（例如 `--dangerously-skip-permissions`）。pane 已關掉或被別的 session 占用時，紀錄保留並印出換 pane 復原的指令。agent 卡在信任或權限確認畫面時會提示你到 pane 回答，工具不會替你按。
+- **herdr 重啟或重開機後**：stub 是 process，會跟著 herdr 一起消失，但紀錄與 pane id 都在。plugin 的 startup hook 會跑 `--rearm`，把 stub 種回仍停在 shell prompt 的休眠 pane，按 Enter 照樣復原。pane 已不在、正在跑別的程式、或該 session 已在跑的，一律不動。沒裝 plugin 時自己執行 `herdr-nap --rearm`。
 - **清單**：依閒置時間排序（對話紀錄最後一筆，不是 process 年齡），RSS 是整棵 process 樹，備註欄標記「子行程N」「subagent活動中」「剛啟動」「無對話紀錄」。清單下方是游標所在 pane 的畫面預覽（Ctrl-/ 切換）。
 - **釘選**：`~/.config/herdr-nap/exclude` 一行一個字樣，pane 標題或 tab 標籤含它的 agent 不進挑選清單。
 - **herdr 之外**：herdr 外直開的 `claude`/`grok` 改送 SIGTERM。在 herdr pane 裡但 herdr 沒辨識成 agent 的，以及前景是 `ssh`/`mosh` 連到別台機器的 pane，唯讀列出。
@@ -100,10 +102,10 @@ herdr-nap --restore  整批復原
 
 休眠中的 pane，herdr 回報的 `agent` 與 `agent_session` 都是 null。session id 存在 `${XDG_STATE_HOME:-~/.local/state}/herdr-nap/napped.tsv`，這個檔案是穩定的對外介面：
 
-- 一行一個 pane，tab 分隔，沒有標頭：`pane_id  kind  name  session_id  cwd  argv`。空值寫成 `-`。
+- 一行一個 pane，tab 分隔，沒有標頭：`pane_id  kind  name  session_id  cwd  argv  title`。0.2.4 以前寫的紀錄沒有 `title`。空值寫成 `-`。
 - 欄位順序不變，新欄位只加在最後。
 - 整檔以 rename 替換，讀的一方不會讀到寫一半的內容。
-- 紀錄可能比休眠活得久（herdr 重啟後 stub 消失，紀錄要等下次休眠或復原才清掉）。herdr 同時回報該 pane 的 `agent` 為 null 時，這行才算數。
+- 紀錄可能比休眠活得久（例如在 stub 按 Ctrl-C 離開、或 pane 被關掉；要等該 session 回來或 `--restore` 成功才清掉）。herdr 同時回報該 pane 的 `agent` 為 null 時，這行才算數。
 
 ### 已知限制
 

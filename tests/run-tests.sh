@@ -106,13 +106,29 @@ test_should_round_trip_through_eval() {
 }
 
 # ---------- record_line / 舊紀錄相容 ----------
-test_should_write_six_tab_fields() {
-  assert_eq $'w1:p1\tclaude\tname\tSID\t/tmp\t--bg' "$(record_line w1:p1 claude name SID /tmp --bg)"
+test_should_write_seven_tab_fields_with_title_last() {
+  assert_eq $'w1:p1\tclaude\tname\tSID\t/tmp\t--bg\tmy title' \
+    "$(record_line w1:p1 claude name SID /tmp --bg "my title")"
+}
+test_should_write_dash_title_when_title_is_empty() {
+  assert_eq $'w1:p1\tclaude\tname\tSID\t/tmp\t-\t-' "$(record_line w1:p1 claude name SID /tmp "" "")"
+}
+test_should_read_old_six_field_record_with_empty_title() {
+  # 0.2.3 以前的紀錄沒有 title 欄
+  local pane kind name session cwd argv title _rest
+  IFS=$'\t' read -r pane kind name session cwd argv title _rest <<< $'w1:p1\tclaude\tclaude\tSID\t/tmp\t--bg'
+  assert_eq "--bg" "$argv" argv
+  assert_eq "" "$title" title
+}
+test_should_not_merge_future_columns_into_title_when_reading_with_rest() {
+  local pane kind name session cwd argv title _rest
+  IFS=$'\t' read -r pane kind name session cwd argv title _rest <<< $'w1:p1\tclaude\tclaude\tSID\t/tmp\t-\tT\tFUTURE'
+  assert_eq "T" "$title" title
 }
 test_should_write_dash_for_empty_fields_so_read_does_not_shift() {
   # bash 的 IFS=tab read 會合併連續 tab，空欄不補 - 整列就位移
-  local pane kind name session cwd argv
-  IFS=$'\t' read -r pane kind name session cwd argv <<< "$(record_line w1:p1 claude claude SID "" --bg)"
+  local pane kind name session cwd argv title _rest
+  IFS=$'\t' read -r pane kind name session cwd argv title _rest <<< "$(record_line w1:p1 claude claude SID "" --bg)"
   assert_eq "SID" "$session" session
   assert_eq "" "$(undash "$cwd")" cwd-empty
   assert_eq "--bg" "$(undash "$argv")" argv
@@ -143,7 +159,7 @@ test_should_upsert_record_replacing_same_pane_and_keeping_others() {
   upsert_record w1:p1 "$(record_line w1:p1 claude claude OLD /a "")"
   upsert_record w2:p1 "$(record_line w2:p1 grok grok KEEP /b "")"
   upsert_record w1:p1 "$(record_line w1:p1 claude claude NEW /a --bg)"
-  assert_eq $'w2:p1\tgrok\tgrok\tKEEP\t/b\t-\nw1:p1\tclaude\tclaude\tNEW\t/a\t--bg' "$(cat "$RESTORE_LOG")"
+  assert_eq $'w2:p1\tgrok\tgrok\tKEEP\t/b\t-\t-\nw1:p1\tclaude\tclaude\tNEW\t/a\t--bg\t-' "$(cat "$RESTORE_LOG")"
   [ -d "$LOCK_DIR" ] && assert_eq "lock released" "lock left behind" || assert_eq 1 1
   rm -rf "$STATE_DIR"
 }
@@ -153,8 +169,8 @@ test_should_remove_only_listed_panes() {
   upsert_record w2:p1 "$(record_line w2:p1 claude claude B /b "")"
   upsert_record w3:p1 "$(record_line w3:p1 claude claude C /c "")"
   remove_records "w1:p1 w3:p1"
-  assert_eq $'w2:p1\tclaude\tclaude\tB\t/b\t-' "$(cat "$RESTORE_LOG")"
-  remove_records ""; assert_eq $'w2:p1\tclaude\tclaude\tB\t/b\t-' "$(cat "$RESTORE_LOG")" empty-list-noop
+  assert_eq $'w2:p1\tclaude\tclaude\tB\t/b\t-\t-' "$(cat "$RESTORE_LOG")"
+  remove_records ""; assert_eq $'w2:p1\tclaude\tclaude\tB\t/b\t-\t-' "$(cat "$RESTORE_LOG")" empty-list-noop
   rm -rf "$STATE_DIR"
 }
 test_should_give_up_on_lock_held_by_someone_else_and_break_stale_lock() {

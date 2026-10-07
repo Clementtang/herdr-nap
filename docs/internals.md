@@ -30,7 +30,7 @@ tests/run-tests.sh
 
 - herdr's persisted `~/.config/herdr/session.json` stores only cwd per pane, plus `agent_session` when an agent is present. Napped panes (stub waiting or back at a shell) have no `agent_session`.
 - Panes napped on 8/26 and 9/4 went through restarts on 9/1 and 9/9: same pane id (session.json keeps a `public_pane_numbers` map), same cwd, empty shell, stub gone, no agent relaunched.
-- So a restart does not bring napped agents back to eat memory; you only lose the in-pane Enter shortcut. `--restore` already handles panes at a shell prompt through `herdr agent start`, so no shell hook is needed.
+- So a restart does not bring napped agents back to eat memory; you only lose the in-pane Enter shortcut. Since 0.2.4 the plugin's `[[startup]]` hook runs `--rearm` to put the stubs back (startup hooks fire at server start, measured 2026-10-07); with `HERDR_PLUGIN_EVENT=startup` it waits and retries panes whose shell is not at a prompt yet. No shell hook is needed.
 - herdr relaunches live agents with plain `claude --resume <uuid>`, dropping their original flags. That is herdr's behaviour, outside this tool's reach.
 - For experiments that need an isolated server, use a named session (`herdr --session <name>`: separate directory and socket, the CLI follows `HERDR_SOCKET_PATH`) instead of restarting the main one.
 
@@ -94,7 +94,7 @@ tests/run-tests.sh
 
 - herdr 的持久化檔 `~/.config/herdr/session.json` 對每個 pane 只存 cwd，pane 上有 agent 時才多存 `agent_session`。已休眠的 pane（不論 stub 待命中或已回 shell）沒有 `agent_session`。
 - 8/26 與 9/4 休眠的 pane 經過 9/1、9/9 兩次重啟後：pane id 不變（session.json 有 `public_pane_numbers` 對照表）、cwd 不變、變成空 shell、stub 消失、agent 沒有被拉起。
-- 所以重啟不會讓休眠的 agent 回來吃記憶體，只會失去 pane 裡按 Enter 的捷徑；`--restore` 對停在 shell prompt 的 pane 本來就走 `herdr agent start`，不需要 shell hook，也不動 `.zshrc`。
+- 所以重啟不會讓休眠的 agent 回來吃記憶體，只會失去 pane 裡按 Enter 的捷徑。0.2.4 起 plugin 的 `[[startup]]` hook 會跑 `--rearm` 把 stub 種回去（startup hook 在 server 啟動時觸發，2026-10-07 實測）；帶 `HERDR_PLUGIN_EVENT=startup` 時會等待並重試 shell 還沒到 prompt 的 pane。不需要 shell hook，也不動 `.zshrc`。
 - herdr 自己重啟時拉起活著的 agent 用的是 `claude --resume <uuid>`，原本的啟動旗標一樣會掉。這是 herdr 的行為，本工具管不到。
 - 需要隔離的 herdr server 做實驗時，用具名 session（`herdr --session <name>`，獨立目錄與 socket，CLI 靠 `HERDR_SOCKET_PATH` 指向），不要重啟主 server。
 

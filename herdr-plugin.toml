@@ -33,6 +33,11 @@ title = "Herdr Nap: 清單"
 placement = "overlay"
 command = ["bash", "-c", "bash \"$HERDR_PLUGIN_ROOT/herdr-nap\" --list; printf '\\n按 Enter 關閉'; read -r _"]
 
+# herdr 重啟（含重開機）後 pane 裡的 stub 會消失，啟動時自動種回去。
+# 沒有休眠紀錄時什麼都不做；herdr-nap 會依 HERDR_PLUGIN_EVENT=startup 等 shell 起來。
+[[startup]]
+command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/herdr-nap\" --rearm"]
+
 # action 只負責把對應的 pane 叫出來
 [[actions]]
 id = "nap"

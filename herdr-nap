@@ -8,6 +8,7 @@
 # 用法：herdr-nap            互動挑選（TAB 多選、Enter 清理、Esc 取消）
 #       herdr-nap --list     只列出，不清理
 #       herdr-nap --restore  復原先前休眠的 herdr agent
+#       herdr-nap --rearm    herdr 重啟後把 stub 種回休眠的 pane
 set -euo pipefail
 
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-nap"
@@ -47,7 +48,7 @@ t() {
 msg_zh() {
   case "$1" in
     need_missing) printf '找不到 %%s 指令。' ;;
-    usage) printf '用法：herdr-nap            互動挑選（TAB 多選、Enter 清理、Esc 取消）\n      herdr-nap --list     只列出，不清理\n      herdr-nap --restore  復原先前休眠的 herdr agent' ;;
+    usage) printf '用法：herdr-nap            互動挑選（TAB 多選、Enter 清理、Esc 取消）\n      herdr-nap --list     只列出，不清理\n      herdr-nap --restore  復原先前休眠的 herdr agent\n      herdr-nap --rearm    herdr 重啟後把 stub 種回休眠的 pane（plugin 會在 herdr 啟動時自動執行）' ;;
     mark_children) printf '子行程%%s' ;;
     mark_subagent) printf 'subagent活動中' ;;
     mark_just_started) printf '剛啟動' ;;
@@ -55,6 +56,9 @@ msg_zh() {
     mark_pinned) printf '釘選' ;;
     blocked_hint) printf '%%s %%s 已起來但停在確認畫面（例如工作區信任或權限確認），到該 pane 回答後即完成；紀錄保留，下次執行會自動清掉。' ;;
     stub_banner) printf '%%s 已休眠，釋放 %%s' ;;
+    stub_banner_plain) printf '%%s 已休眠' ;;
+    rearm_done) printf '已把 stub 種回 %%s 個 pane：%%s' ;;
+    rearm_none) printf '沒有需要種回 stub 的 pane。' ;;
     stub_sub) printf 'session %%s · 按 Enter 復原、Ctrl-C 回到 shell' ;;
     stub_bye) printf '已離開待命，pane 回到 shell。手動復原：' ;;
     stub_resuming) printf '復原中，約需 10 到 20 秒...' ;;
@@ -105,7 +109,7 @@ msg_zh() {
 msg_en() {
   case "$1" in
     need_missing) printf 'Command not found: %%s.' ;;
-    usage) printf 'Usage: herdr-nap            interactive picker (TAB to multi-select, Enter to nap, Esc to cancel)\n       herdr-nap --list     list only, no changes\n       herdr-nap --restore  bring back napped herdr agents' ;;
+    usage) printf 'Usage: herdr-nap            interactive picker (TAB to multi-select, Enter to nap, Esc to cancel)\n       herdr-nap --list     list only, no changes\n       herdr-nap --restore  bring back napped herdr agents\n       herdr-nap --rearm    put stubs back into napped panes after a herdr restart (the plugin runs this when herdr starts)' ;;
     mark_children) printf 'children:%%s' ;;
     mark_subagent) printf 'subagent-active' ;;
     mark_just_started) printf 'just-started' ;;
@@ -113,6 +117,9 @@ msg_en() {
     mark_pinned) printf 'pinned' ;;
     blocked_hint) printf '%%s %%s is up but stopped at a prompt (workspace trust or a permission check). Answer it in that pane; the record is kept and cleared on the next run.' ;;
     stub_banner) printf '%%s is napping, freed %%s' ;;
+    stub_banner_plain) printf '%%s is napping' ;;
+    rearm_done) printf 'Stubs put back in %%s panes: %%s' ;;
+    rearm_none) printf 'No napped pane needs a stub.' ;;
     stub_sub) printf 'session %%s · Enter to resume, Ctrl-C for a shell' ;;
     stub_bye) printf 'Left the stub, pane is back at a shell. Manual restore:' ;;
     stub_resuming) printf 'Resuming, about 10 to 20 seconds...' ;;
@@ -424,11 +431,13 @@ replay_flags() {
   printf '%s' "${out# }"
 }
 
-# 一筆復原紀錄：pane kind name session cwd argv（argv 是 replay_flags 的輸出，
-# 舊紀錄沒有這欄，讀回來時是空字串）
+# 一筆復原紀錄：pane kind name session cwd argv title（argv 是 replay_flags 的輸出；
+# title 給 --rearm 重種的 stub 顯示用。舊紀錄少了後面的欄位，讀回來時是空字串）
 # 空欄一律寫 -：bash 的 IFS=tab read 會把連續 tab 合併，中間有空欄整列就位移
+# README 承諾欄位只往後加：讀的一方最後要多接一個 _rest，以後再加欄位才不會併進 title
 record_line() {
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${1:--}" "${2:--}" "${3:--}" "${4:--}" "${5:--}" "${6:--}"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "${1:--}" "${2:--}" "${3:--}" "${4:--}" "${5:--}" "${6:--}" "${7:--}"
 }
 undash() { [ "$1" = - ] || printf '%s' "$1"; }
 
@@ -578,7 +587,12 @@ write_and_arm_stub() {
   glob_off; for tok in $argv; do q_argv="$q_argv $(sq "$tok")"; done; glob_restore
   q_cwd=$(sq "$cwd")
   q_session=$(sq "$session")
-  q_banner=$(sq "$(t stub_banner "$kind" "$freed")")
+  # --rearm 重種時 agent 早已不在，不知道當初釋放多少，就不寫數字
+  if [ -n "$freed" ]; then
+    q_banner=$(sq "$(t stub_banner "$kind" "$freed")")
+  else
+    q_banner=$(sq "$(t stub_banner_plain "$kind")")
+  fi
   q_sub=$(sq "$(t stub_sub "$session")")
   # stub 的訊息在產生時就依當下語言固定下來
   q_bye=$(sq "$(t stub_bye)")
@@ -619,8 +633,8 @@ EOF
 # 否則那個 session id 就永遠找不回來了。
 prune_stale_records() {
   [ -s "$RESTORE_LOG" ] || return 0
-  local pane kind name session cwd argv stale=""
-  while IFS=$'\t' read -r pane kind name session cwd argv; do
+  local pane kind name session cwd argv _title _rest stale=""
+  while IFS=$'\t' read -r pane kind name session cwd argv _title _rest; do
     [ -n "$pane" ] || continue
     session=$(undash "$session")
     if [ -n "$session" ] && [ "$(running_session_of_pane "$pane")" = "$session" ]; then
@@ -636,7 +650,7 @@ if [ "${HERDR_NAP_LIB_ONLY:-}" = 1 ]; then return 0 2>/dev/null || exit 0; fi
 
 MODE=${1:-}
 case "$MODE" in
-  ""|--list|--restore) ;;
+  ""|--list|--restore|--rearm) ;;
   *)
     echo "$(t usage)"
     exit 1
@@ -651,6 +665,49 @@ need jq
 PS_DUMP=$(mktemp "${TMPDIR:-/tmp}/herdr-nap.ps.XXXXXX")
 trap 'rm -f "$PS_DUMP"; release_state_lock' EXIT
 refresh_ps_dump
+
+# ---------- 重種 stub ----------
+# herdr 重啟（含重開機）後 pane id 與 cwd 都在，只有 pane 裡的 stub process 沒了。
+# 只種回「pane 還在、停在 shell prompt、session 沒在任何 pane 跑」的紀錄，其餘不動。
+# 從 herdr 的 [[startup]] 觸發時 shell 可能還沒起來，停在非 prompt 的 pane 隔幾秒再試。
+REARM_ATTEMPTS=5
+REARM_RETRY_SECS=3
+if [ "$MODE" = "--rearm" ]; then
+  prune_stale_records
+  [ -s "$RESTORE_LOG" ] || { echo "$(t rearm_none)"; exit 0; }
+  on_startup=0
+  [ "${HERDR_PLUGIN_EVENT:-}" = startup ] && on_startup=1
+  [ "$on_startup" -eq 0 ] || sleep "$REARM_RETRY_SECS"
+  armed_panes=""; attempt=1
+  while :; do
+    running_sessions=$(herdr agent list 2>/dev/null | jq -r '.result.agents[].agent_session.value // empty')
+    refresh_ps_dump
+    waiting=0
+    while IFS=$'\t' read -r pane kind name session cwd argv title _rest; do
+      [ -n "$pane" ] || continue
+      name=$(undash "$name"); session=$(undash "$session"); cwd=$(undash "$cwd")
+      argv=$(undash "$argv"); title=$(undash "$title")
+      [ -n "$session" ] || continue
+      case " $armed_panes " in *" $pane "*) continue ;; esac
+      pane_exists "$pane" || continue
+      printf '%s\n' "$running_sessions" | grep -qxF "$session" && continue
+      [ -z "$(stub_pid_of_pane "$pane")" ] || continue
+      if ! pane_at_prompt "$pane"; then waiting=1; continue; fi
+      write_and_arm_stub "$pane" "$kind" "$name" "$session" "$cwd" "" "$argv" "$title"
+      armed_panes="$armed_panes $pane"
+    done < <(cat "$RESTORE_LOG")
+    # 手動執行時不等：pane 不在 prompt 上多半是使用者正拿它做別的事
+    [ "$on_startup" -eq 1 ] && [ "$waiting" -eq 1 ] && [ "$attempt" -lt "$REARM_ATTEMPTS" ] || break
+    attempt=$((attempt + 1)); sleep "$REARM_RETRY_SECS"
+  done
+  armed_panes=${armed_panes# }
+  if [ -n "$armed_panes" ]; then
+    echo "$(t rearm_done "$(printf '%s\n' $armed_panes | wc -l | tr -d ' ')" "$armed_panes")"
+  else
+    echo "$(t rearm_none)"
+  fi
+  exit 0
+fi
 
 # ---------- 復原模式 ----------
 if [ "$MODE" = "--restore" ]; then
@@ -667,7 +724,7 @@ if [ "$MODE" = "--restore" ]; then
   ok=0; fail=0; restored_panes=""
   # 紀錄留在檔案裡直到確定復原成功；keep_record 只是讓各分支語意清楚
   keep_record() { :; }
-  while IFS=$'\t' read -r pane kind name session cwd argv; do
+  while IFS=$'\t' read -r pane kind name session cwd argv _title _rest; do
     [ -n "$pane" ] || continue
     name=$(undash "$name"); session=$(undash "$session"); cwd=$(undash "$cwd"); argv=$(undash "$argv")
     if [ -z "$session" ]; then
@@ -897,7 +954,7 @@ while IFS=$'\t' read -r src kind pane _status pid rss _idle _risk cwd title _eti
     else
       cwd="${cwd/#\~/$HOME}"
       # 先落地紀錄，再種 stub：stub 失敗頂多少了按 Enter 的捷徑，session id 不會丟
-      upsert_record "$pane" "$(record_line "$pane" "$kind" "$name" "$session" "$cwd" "$argv")" || true
+      upsert_record "$pane" "$(record_line "$pane" "$kind" "$name" "$session" "$cwd" "$argv" "$title")" || true
       write_and_arm_stub "$pane" "$kind" "$name" "$session" "$cwd" "$rss" "$argv" "$title"
       echo "$(t napped "$pane" "$kind" "${argv:+$(t napped_argv "$argv")}")"
       napped=$((napped + 1))

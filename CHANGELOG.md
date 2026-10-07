@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- `--rearm`：herdr 重啟或重開機後，把 stub 種回仍停在 shell prompt 的休眠 pane，按 Enter 照樣就地復原。plugin 以 `[[startup]]` hook 在 herdr 啟動時自動執行，shell 還沒起來的 pane 會等幾秒重試。
+- `napped.tsv` 新增第 7 欄 `title`（只往後加，符合對外介面承諾），重種的 stub 也能顯示 `[nap] 原標題`；不知道釋放量時橫幅省略 MB。
+
 ## [0.2.3] - 2026-10-06
 
 ### Fixed
