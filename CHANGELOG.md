@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-10-08
+
 ### Fixed
 
 - session 已經在別的 pane 跑（例如自己在新 pane resume，herdr 重啟時又拉回那裡）時，原 pane 的紀錄不會清掉，`--restore` 會在原 pane 再起一份，兩個 process 接著同一個 session。現在只要 session 在任何 pane 跑著，紀錄就清掉。
