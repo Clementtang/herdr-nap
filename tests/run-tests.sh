@@ -153,6 +153,16 @@ test_should_read_old_five_field_record_with_empty_argv() {
 }
 with_temp_state() {   # 讓紀錄相關函式寫到暫存目錄
   STATE_DIR=$(mktemp -d); RESTORE_LOG="$STATE_DIR/napped.tsv"; LOCK_DIR="$STATE_DIR/.lock"; HOLDING_LOCK=0
+  TEMP_STATE_DIR=$STATE_DIR
+}
+# 只刪 with_temp_state 建的那個目錄。曾有測試重新 source 腳本，STATE_DIR 被改回
+# ~/.local/state/herdr-nap，收尾的 rm -rf 把使用者的真實紀錄整個刪掉（2026-10-08）
+cleanup_temp_state() {
+  if [ -n "${TEMP_STATE_DIR:-}" ] && [ "$STATE_DIR" = "$TEMP_STATE_DIR" ]; then
+    rm -rf "$TEMP_STATE_DIR"
+  else
+    echo "拒絕刪除非暫存的 STATE_DIR：$STATE_DIR" >&2; fail=$((fail + 1))
+  fi
 }
 test_should_upsert_record_replacing_same_pane_and_keeping_others() {
   with_temp_state
@@ -161,7 +171,21 @@ test_should_upsert_record_replacing_same_pane_and_keeping_others() {
   upsert_record w1:p1 "$(record_line w1:p1 claude claude NEW /a --bg)"
   assert_eq $'w2:p1\tgrok\tgrok\tKEEP\t/b\t-\t-\nw1:p1\tclaude\tclaude\tNEW\t/a\t--bg\t-' "$(cat "$RESTORE_LOG")"
   [ -d "$LOCK_DIR" ] && assert_eq "lock released" "lock left behind" || assert_eq 1 1
-  rm -rf "$STATE_DIR"
+  cleanup_temp_state
+}
+# running_sessions 在 $( ) 子 shell 裡覆寫，不外洩給其他測試
+test_should_prune_record_when_session_runs_in_another_pane() {
+  with_temp_state; STUB_DIR="$STATE_DIR/panes"
+  upsert_record w1:pK "$(record_line w1:pK claude claude BACK /a "")"
+  upsert_record w1:p7 "$(record_line w1:p7 claude claude ASLEEP /b "")"
+  assert_eq "w1:p7" "$(running_sessions() { printf 'BACK\nOTHER\n'; }; prune_stale_records; cut -f1 "$RESTORE_LOG")"
+  cleanup_temp_state
+}
+test_should_keep_records_when_session_list_is_unavailable() {
+  with_temp_state; STUB_DIR="$STATE_DIR/panes"
+  upsert_record w1:p7 "$(record_line w1:p7 claude claude ASLEEP /b "")"
+  assert_eq "w1:p7" "$(running_sessions() { :; }; prune_stale_records; cut -f1 "$RESTORE_LOG")"
+  cleanup_temp_state
 }
 test_should_remove_only_listed_panes() {
   with_temp_state
@@ -171,7 +195,7 @@ test_should_remove_only_listed_panes() {
   remove_records "w1:p1 w3:p1"
   assert_eq $'w2:p1\tclaude\tclaude\tB\t/b\t-\t-' "$(cat "$RESTORE_LOG")"
   remove_records ""; assert_eq $'w2:p1\tclaude\tclaude\tB\t/b\t-\t-' "$(cat "$RESTORE_LOG")" empty-list-noop
-  rm -rf "$STATE_DIR"
+  cleanup_temp_state
 }
 test_should_give_up_on_lock_held_by_someone_else_and_break_stale_lock() {
   with_temp_state; LOCK_WAIT_SECS=1
@@ -181,7 +205,7 @@ test_should_give_up_on_lock_held_by_someone_else_and_break_stale_lock() {
   # 60 秒沒動的鎖視為殘留，可以打破
   touch -t 202601010000 "$LOCK_DIR"
   upsert_record w1:p1 "$(record_line w1:p1 claude claude A /a "")"; assert_eq 0 $? stale-broken
-  LOCK_WAIT_SECS=30; rm -rf "$STATE_DIR"
+  LOCK_WAIT_SECS=30; cleanup_temp_state
 }
 
 # ---------- fmt_age / etime_to_secs ----------

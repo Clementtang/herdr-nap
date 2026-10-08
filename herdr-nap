@@ -555,6 +555,11 @@ running_session_of_pane() {
     '.result.agents[] | select(.pane_id == $p) | .agent_session.value // ""'
 }
 
+# herdr 回報的所有 agent session id，一行一個
+running_sessions() {
+  herdr agent list 2>/dev/null | jq -r '.result.agents[].agent_session.value // empty'
+}
+
 # 等 herdr 回報指定 session 出現在該 pane（agent 起來到被偵測有數秒落差）
 wait_for_session() {
   local pane=$1 session=$2 tries=${3:-12} i=0
@@ -628,16 +633,19 @@ EOF
   fi
 }
 
-# 只清掉「紀錄裡那個 session 確實已經回到該 pane」的項目（多半是使用者自己
-# 在 pane 裡按了 Enter）。pane 上跑著別的 session 不算復原，紀錄必須留著，
-# 否則那個 session id 就永遠找不回來了。
+# 只清掉「紀錄裡那個 session 確實已經在跑」的項目（多半是使用者在 pane 裡按了
+# Enter）。看的是 session id 不是 pane：原 pane 上跑著別的 session 不算復原，紀錄
+# 必須留著，否則那個 session id 就永遠找不回來了；反過來，session 在別的 pane 跑
+# （例如自己在新 pane resume，herdr 重啟時又拉回那裡）就算回來了，紀錄若留著，
+# --restore 會在原 pane 再起一份，兩個 process 接著同一個 session。
 prune_stale_records() {
   [ -s "$RESTORE_LOG" ] || return 0
-  local pane kind name session cwd argv _title _rest stale=""
+  local pane kind name session cwd argv _title _rest stale="" running
+  running=$(running_sessions)
   while IFS=$'\t' read -r pane kind name session cwd argv _title _rest; do
     [ -n "$pane" ] || continue
     session=$(undash "$session")
-    if [ -n "$session" ] && [ "$(running_session_of_pane "$pane")" = "$session" ]; then
+    if [ -n "$session" ] && printf '%s\n' "$running" | grep -qxF "$session"; then
       rm -f "$(stub_path "$pane")"
       stale="$stale $pane"
     fi
@@ -680,7 +688,7 @@ if [ "$MODE" = "--rearm" ]; then
   [ "$on_startup" -eq 0 ] || sleep "$REARM_RETRY_SECS"
   armed_panes=""; attempt=1
   while :; do
-    running_sessions=$(herdr agent list 2>/dev/null | jq -r '.result.agents[].agent_session.value // empty')
+    running=$(running_sessions)
     refresh_ps_dump
     waiting=0
     while IFS=$'\t' read -r pane kind name session cwd argv title _rest; do
@@ -690,7 +698,7 @@ if [ "$MODE" = "--rearm" ]; then
       [ -n "$session" ] || continue
       case " $armed_panes " in *" $pane "*) continue ;; esac
       pane_exists "$pane" || continue
-      printf '%s\n' "$running_sessions" | grep -qxF "$session" && continue
+      printf '%s\n' "$running" | grep -qxF "$session" && continue
       [ -z "$(stub_pid_of_pane "$pane")" ] || continue
       if ! pane_at_prompt "$pane"; then waiting=1; continue; fi
       write_and_arm_stub "$pane" "$kind" "$name" "$session" "$cwd" "" "$argv" "$title"

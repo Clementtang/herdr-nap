@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- session 已經在別的 pane 跑（例如自己在新 pane resume，herdr 重啟時又拉回那裡）時，原 pane 的紀錄不會清掉，`--restore` 會在原 pane 再起一份，兩個 process 接著同一個 session。現在只要 session 在任何 pane 跑著，紀錄就清掉。
+- 測試收尾只刪 `with_temp_state` 建的暫存目錄，避免測試改動 `STATE_DIR` 後誤刪真實紀錄。
+
 ## [0.2.4] - 2026-10-07
 
 ### Added
