@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-11-13
+
 ### Fixed
 
 - 對話紀錄檔被 Claude Code 依 `cleanupPeriodDays`（預設 30 天）刪掉的休眠紀錄，按 Enter 復原只會看到 `No conversation found`，herdr-shelf 也仍把它當成可以復原。現在除了 `--list` 以外，每次執行都會移除這類紀錄與它的 stub 檔並列出 pane；stub 在 exec 之前也會先檢查，紀錄檔不在就說明原因後回到 shell。transcript 根目錄整個不在時不做判斷。
