@@ -63,6 +63,8 @@ msg_zh() {
     stub_bye) printf '已離開待命，pane 回到 shell。手動復原：' ;;
     stub_resuming) printf '復原中，約需 10 到 20 秒...' ;;
     stub_exec_failed) printf '啟動 %%s 失敗，手動復原：%%s' ;;
+    stub_transcript_gone) printf '找不到 session %%s 的對話紀錄檔（可能已被 Claude Code 的 cleanupPeriodDays 清掉），無法復原。pane 回到 shell。' ;;
+    pruned_expired) printf '已移除對話紀錄檔不存在、無法復原的休眠紀錄：%%s' ;;
     restore_nothing) printf '沒有可復原的紀錄（%%s 是空的）。' ;;
     restore_heading) printf '休眠中的 agent：' ;;
     restore_confirm) printf '全部復原？[y/N] ' ;;
@@ -124,6 +126,8 @@ msg_en() {
     stub_bye) printf 'Left the stub, pane is back at a shell. Manual restore:' ;;
     stub_resuming) printf 'Resuming, about 10 to 20 seconds...' ;;
     stub_exec_failed) printf 'Failed to start %%s. Manual restore: %%s' ;;
+    stub_transcript_gone) printf 'The transcript for session %%s is gone (probably removed by Claude Code cleanupPeriodDays), so it cannot be resumed. Pane is back at a shell.' ;;
+    pruned_expired) printf 'Removed napped records whose transcript is gone and cannot be resumed: %%s' ;;
     restore_nothing) printf 'Nothing to restore (%%s is empty).' ;;
     restore_heading) printf 'Napping agents:' ;;
     restore_confirm) printf 'Restore all? [y/N] ' ;;
@@ -320,11 +324,36 @@ latest_entry_epoch() { printf '%s\n' "$@" | epoch_of_file_list; }
 # session 對話紀錄檔。用 session id 直接 glob，不必知道各家對 cwd 的編碼規則
 # （claude 把 / 換成 -，grok 走 percent-encoding 且 worktree session 會存在
 # 另一個 cwd 底下）。
-session_files() {
+# 拆成根目錄與 session 內的相對路徑，stub 要在自己的 bash 裡重組同一個 glob。
+session_root() {
   case "$1" in
-    claude) printf '%s\n' "$HOME"/.claude/projects/*/"$2".jsonl ;;
-    grok) printf '%s\n' "$HOME"/.grok/sessions/*/"$2"/updates.jsonl ;;
+    claude) printf '%s' "$HOME/.claude/projects" ;;
+    grok) printf '%s' "$HOME/.grok/sessions" ;;
   esac
+}
+session_suffix() {
+  case "$1" in
+    claude) printf '%s.jsonl' "$2" ;;
+    grok) printf '%s/updates.jsonl' "$2" ;;
+  esac
+}
+session_files() {
+  local root
+  root=$(session_root "$1")
+  [ -n "$root" ] || return 0
+  printf '%s\n' "$root"/*/"$(session_suffix "$1" "$2")"
+}
+# 對話紀錄檔已經不在，--resume 必然失敗。Claude Code 預設只留 30 天
+# （cleanupPeriodDays），休眠太久的 session 檔會在 claude 啟動時被刪掉。
+# 根目錄整個不在時不下判斷：搬家或還沒掛載時不能把紀錄全部當成失效。
+transcript_gone() {
+  local root file
+  root=$(session_root "$1")
+  [ -n "$root" ] && [ -n "$2" ] && [ -d "$root" ] || return 1
+  while IFS= read -r file; do
+    [ -e "$file" ] && return 1
+  done < <(session_files "$1" "$2")
+  return 0
 }
 subagent_files() {
   [ "$1" = claude ] && printf '%s\n' "$HOME"/.claude/projects/*/"$2"/subagents/*.jsonl
@@ -581,6 +610,7 @@ sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 write_and_arm_stub() {
   local pane=$1 kind=$2 name=$3 session=$4 cwd=$5 freed=$6 argv=$7 title=$8
   local path tmp q_hint q_cwd q_session q_banner q_sub q_title q_bye q_resuming q_fail q_argv="" tok
+  local q_root q_suffix q_gone
   path=$(stub_path "$pane"); tmp="$path.tmp"
   [ -n "$cwd" ] || cwd=$HOME
   # 待命時把終端標題設成「[nap] 原標題」，側欄一眼看出睡著的是誰。用 OSC 跳脫
@@ -603,6 +633,9 @@ write_and_arm_stub() {
   q_bye=$(sq "$(t stub_bye)")
   q_resuming=$(sq "$(t stub_resuming)")
   q_fail=$(sq "$(t stub_exec_failed "$kind" "$(restore_hint "$pane" "$kind" "$name" "$session" "$argv")")")
+  q_root=$(sq "$(session_root "$kind")")
+  q_suffix=$(sq "$(session_suffix "$kind" "$session")")
+  q_gone=$(sq "$(t stub_transcript_gone "$session")")
   mkdir -p "$STUB_DIR"
   cat > "$tmp" <<EOF
 #!/bin/bash
@@ -621,6 +654,13 @@ printf '\033]0;%s\007' ${q_title}
 printf '\n\033[1;35m%s\033[0m\n' ${q_banner}
 printf '\033[2m%s\033[0m\n\n' ${q_sub}
 IFS= read -r _ || exit 0
+# 待命期間對話紀錄檔可能已被刪掉（Claude Code cleanupPeriodDays），按下 Enter 才檢查
+_found=0
+for _f in ${q_root}/*/${q_suffix}; do [ -e "\$_f" ] && _found=1; done
+if [ -d ${q_root} ] && [ "\$_found" -eq 0 ]; then
+  printf '\n\033[2m%s\033[0m\n\n' ${q_gone}
+  exit 0
+fi
 printf '%s\n' ${q_resuming}
 exec ${kind}${q_argv} --resume ${q_session}
 printf '%s\n' ${q_fail}
@@ -638,19 +678,27 @@ EOF
 # 必須留著，否則那個 session id 就永遠找不回來了；反過來，session 在別的 pane 跑
 # （例如自己在新 pane resume，herdr 重啟時又拉回那裡）就算回來了，紀錄若留著，
 # --restore 會在原 pane 再起一份，兩個 process 接著同一個 session。
+#
+# 對話紀錄檔已經被刪掉的也一併清掉：這種紀錄永遠復原不了，留著只會讓 stub、
+# --restore 與讀 napped.tsv 的外部工具（herdr-shelf）把它當成還能復原。
 prune_stale_records() {
   [ -s "$RESTORE_LOG" ] || return 0
-  local pane kind name session cwd argv _title _rest stale="" running
+  local pane kind name session cwd argv _title _rest stale="" expired="" running
   running=$(running_sessions)
   while IFS=$'\t' read -r pane kind name session cwd argv _title _rest; do
     [ -n "$pane" ] || continue
     session=$(undash "$session")
-    if [ -n "$session" ] && printf '%s\n' "$running" | grep -qxF "$session"; then
+    [ -n "$session" ] || continue
+    if printf '%s\n' "$running" | grep -qxF "$session"; then
       rm -f "$(stub_path "$pane")"
       stale="$stale $pane"
+    elif transcript_gone "$kind" "$session"; then
+      rm -f "$(stub_path "$pane")"
+      expired="$expired $pane"
     fi
   done < "$RESTORE_LOG"
-  remove_records "${stale# }"
+  remove_records "$stale$expired"
+  [ -z "$expired" ] || echo "$(t pruned_expired "${expired# }")"
 }
 
 # 以上全是函式。測試只載入函式：HERDR_NAP_LIB_ONLY=1 source herdr-nap

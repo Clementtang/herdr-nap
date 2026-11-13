@@ -54,7 +54,7 @@ While napping, herdr reports the pane with no `agent` and no `agent_session`. Th
 - One line per pane, tab-separated, no header: `pane_id  kind  name  session_id  cwd  argv  title`. Records written before 0.2.4 have no `title`. An empty value is written as `-`.
 - Column order does not change; new columns are only appended at the end.
 - The file is replaced by rename, so a reader never sees a half-written file.
-- A record can outlive its nap (for example after you leave a stub with Ctrl-C, or when its pane is closed; the line stays until that session comes back or `--restore` succeeds). Trust a line only when herdr also reports that pane's `agent` as null.
+- A record can outlive its nap (for example after you leave a stub with Ctrl-C, or when its pane is closed; the line stays until that session comes back or `--restore` succeeds). A line whose transcript file is gone (Claude Code deletes transcripts older than `cleanupPeriodDays`, 30 days by default) can never be resumed and is removed the next time herdr-nap runs. Trust a line only when herdr also reports that pane's `agent` as null.
 
 ### Known limitations
 
@@ -105,7 +105,7 @@ herdr-nap --restore  整批復原
 - 一行一個 pane，tab 分隔，沒有標頭：`pane_id  kind  name  session_id  cwd  argv  title`。0.2.4 以前寫的紀錄沒有 `title`。空值寫成 `-`。
 - 欄位順序不變，新欄位只加在最後。
 - 整檔以 rename 替換，讀的一方不會讀到寫一半的內容。
-- 紀錄可能比休眠活得久（例如在 stub 按 Ctrl-C 離開、或 pane 被關掉；要等該 session 回來或 `--restore` 成功才清掉）。herdr 同時回報該 pane 的 `agent` 為 null 時，這行才算數。
+- 紀錄可能比休眠活得久（例如在 stub 按 Ctrl-C 離開、或 pane 被關掉；要等該 session 回來或 `--restore` 成功才清掉）。對話紀錄檔已經不在的紀錄（Claude Code 會刪掉超過 `cleanupPeriodDays` 的 transcript，預設 30 天）永遠無法復原，下次執行 herdr-nap 時會被移除。herdr 同時回報該 pane 的 `agent` 為 null 時，這行才算數。
 
 ### 已知限制
 

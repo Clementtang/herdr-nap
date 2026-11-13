@@ -46,6 +46,7 @@ tests/run-tests.sh
 - `herdr pane release-agent` only unregisters the agent, the process keeps running; it does not free memory (confirmed in #631).
 - Self exclusion: herdr rows are compared with `herdr pane current`; stray rows walk the ancestor PID chain (also the fallback when the tool runs outside herdr).
 - `napped.tsv` accumulates: several nap batches merge (latest wins per pane) and `--restore` keeps only the failures.
+- **Transcripts expire**: Claude Code deletes transcripts older than `cleanupPeriodDays` (30 days by default) when claude starts, and a long nap easily exceeds that; `--resume` then fails with `No conversation found`. Every run except `--list` drops records whose transcript file is gone, and the stub checks again after Enter before it execs. When the whole transcript root is missing nothing is judged, so a moved or unmounted directory does not wipe the records. Raising `cleanupPeriodDays` in `~/.claude/settings.json` is the real prevention.
 - **The stub must be a child of the pane shell, never `exec` in its place**: the stub `exec`s into the agent, so the agent lands as the pane shell's direct child and the next nap does not take the whole pane with it. Design borrowed from [bengemine/herdr-hibernate](https://github.com/bengemine/herdr-hibernate).
 - **While the stub waits, the pane is not at a shell prompt** and `herdr agent start` refuses it, so `--restore` sends `herdr pane send-keys <pane> enter` and lets the stub exec.
 - **bash 3.2 `printf %q` escapes CJK text byte by byte**: the stub still runs but is unreadable. Wrapping in single quotes by hand (`sq()`) is enough.
@@ -110,6 +111,7 @@ tests/run-tests.sh
 - `herdr pane release-agent` 只解除 agent 註冊、不停 process，不能用來釋放記憶體（#631 社群已證實）。
 - 自身排除：herdr 列比對 `herdr pane current` 的 pane id；散裝列走祖先 PID 鏈（工具在 herdr 之外執行時 pane current 拿不到，祖先鏈也是後備）。
 - 復原紀錄 `napped.tsv` 是累積式：連清多批會合併（同 pane 以最新為準），`--restore` 只把復原失敗的留在紀錄裡。
+- **對話紀錄檔會過期**：Claude Code 在 claude 啟動時會刪掉超過 `cleanupPeriodDays`（預設 30 天）沒動的 transcript，休眠一放超過一個月很常見，之後 `--resume` 會回 `No conversation found`。除了 `--list` 以外，每次執行都會移除 transcript 已經不在的紀錄；stub 在按下 Enter 後、exec 之前也會再檢查一次。transcript 根目錄整個不在時不做判斷，避免目錄搬走或還沒掛載時把紀錄全部清光。真正的預防是在 `~/.claude/settings.json` 把 `cleanupPeriodDays` 調大。
 - **stub 必須是 pane shell 的子 process，不能 exec 取代 pane shell**：stub 內部再 `exec` 成 agent，agent 才會落在「pane shell 的直屬子 process」這個位置，下次清理它才不會連 pane 一起收掉。這個設計參考 [bengemine/herdr-hibernate](https://github.com/bengemine/herdr-hibernate)。
 - **stub 待命時 pane 不在 shell prompt 上**，`herdr agent start` 會被拒絕，所以 `--restore` 對這種 pane 改送 `herdr pane send-keys <pane> enter`，讓 stub 自己 exec。
 - **bash 3.2 的 `printf %q` 會把中文逐位元組轉成八進位跳脫**：產出的 stub 還能執行，但檔案完全不可讀。自己包單引號（`sq()`）即可。

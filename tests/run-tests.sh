@@ -151,13 +151,18 @@ test_should_read_old_five_field_record_with_empty_argv() {
   assert_eq "/tmp" "$cwd" cwd
   assert_eq "" "$argv" argv
 }
-with_temp_state() {   # 讓紀錄相關函式寫到暫存目錄
+REAL_HOME=$HOME
+# 讓紀錄相關函式寫到暫存目錄。HOME 也換成暫存目錄底下的空家目錄：prune 會查
+# 對話紀錄檔還在不在，用真實 HOME 的話假 session id 一律會被當成失效
+with_temp_state() {
   STATE_DIR=$(mktemp -d); RESTORE_LOG="$STATE_DIR/napped.tsv"; LOCK_DIR="$STATE_DIR/.lock"; HOLDING_LOCK=0
   TEMP_STATE_DIR=$STATE_DIR
+  HOME="$STATE_DIR/home"; mkdir -p "$HOME"
 }
 # 只刪 with_temp_state 建的那個目錄。曾有測試重新 source 腳本，STATE_DIR 被改回
 # ~/.local/state/herdr-nap，收尾的 rm -rf 把使用者的真實紀錄整個刪掉（2026-10-08）
 cleanup_temp_state() {
+  HOME=$REAL_HOME
   if [ -n "${TEMP_STATE_DIR:-}" ] && [ "$STATE_DIR" = "$TEMP_STATE_DIR" ]; then
     rm -rf "$TEMP_STATE_DIR"
   else
@@ -185,6 +190,60 @@ test_should_keep_records_when_session_list_is_unavailable() {
   with_temp_state; STUB_DIR="$STATE_DIR/panes"
   upsert_record w1:p7 "$(record_line w1:p7 claude claude ASLEEP /b "")"
   assert_eq "w1:p7" "$(running_sessions() { :; }; prune_stale_records; cut -f1 "$RESTORE_LOG")"
+  cleanup_temp_state
+}
+# ---------- 對話紀錄檔失效 ----------
+test_should_report_transcript_gone_when_root_exists_but_file_missing() {
+  with_temp_state
+  mkdir -p "$HOME/.claude/projects/-a" "$HOME/.grok/sessions/x/G1"
+  : > "$HOME/.claude/projects/-a/HERE.jsonl"; : > "$HOME/.grok/sessions/x/G1/updates.jsonl"
+  transcript_gone claude GONE; assert_eq 0 $? claude-gone
+  transcript_gone claude HERE; assert_eq 1 $? claude-here
+  transcript_gone grok G1; assert_eq 1 $? grok-here
+  transcript_gone grok G2; assert_eq 0 $? grok-gone
+  transcript_gone claude ""; assert_eq 1 $? empty-session
+  cleanup_temp_state
+}
+test_should_not_report_transcript_gone_when_root_dir_missing() {
+  with_temp_state
+  transcript_gone claude GONE; assert_eq 1 $? no-claude-root
+  transcript_gone grok GONE; assert_eq 1 $? no-grok-root
+  cleanup_temp_state
+}
+test_should_prune_record_and_stub_when_transcript_gone() {
+  with_temp_state; STUB_DIR="$STATE_DIR/panes"; mkdir -p "$STUB_DIR"
+  mkdir -p "$HOME/.claude/projects/-a"; : > "$HOME/.claude/projects/-a/ALIVE.jsonl"
+  upsert_record w1:p1 "$(record_line w1:p1 claude claude ALIVE /a "")"
+  upsert_record w1:p2 "$(record_line w1:p2 claude claude GONE /b "" "old title")"
+  : > "$(stub_path w1:p2)"
+  local out
+  out=$(running_sessions() { :; }; prune_stale_records)
+  assert_eq "w1:p1" "$(cut -f1 "$RESTORE_LOG")" kept-alive
+  [ -e "$(stub_path w1:p2)" ] && assert_eq "stub removed" "stub left" || assert_eq 1 1
+  assert_eq "已移除對話紀錄檔不存在、無法復原的休眠紀錄：w1:p2" "$out" message
+  cleanup_temp_state
+}
+test_should_prune_both_running_and_expired_records_in_one_pass() {
+  with_temp_state; STUB_DIR="$STATE_DIR/panes"
+  mkdir -p "$HOME/.claude/projects/-a"; : > "$HOME/.claude/projects/-a/ASLEEP.jsonl"
+  upsert_record w1:pK "$(record_line w1:pK claude claude BACK /a "")"
+  upsert_record w1:p7 "$(record_line w1:p7 claude claude ASLEEP /b "")"
+  upsert_record w1:p9 "$(record_line w1:p9 claude claude GONE /c "")"
+  assert_eq "w1:p7" "$(running_sessions() { printf 'BACK\n'; }; prune_stale_records >/dev/null; cut -f1 "$RESTORE_LOG")"
+  cleanup_temp_state
+}
+test_should_exit_stub_without_exec_when_transcript_gone() {
+  with_temp_state; STUB_DIR="$STATE_DIR/panes"
+  mkdir -p "$HOME/.claude/projects/-a"
+  local out
+  # herdr 在子 shell 裡換成空函式，不會真的把 stub 送進 pane
+  out=$(herdr() { :; }; write_and_arm_stub w1:p2 claude claude GONE "$STATE_DIR" "" "" t
+        HOME="$HOME" bash "$(stub_path w1:p2)" <<< "" 2>&1)
+  case "$out" in
+    *"找不到 session GONE 的對話紀錄檔"*) assert_eq 1 1 ;;
+    *) assert_eq "transcript gone message" "$out" ;;
+  esac
+  case "$out" in *"復原中"*) assert_eq "no resume" "resumed" ;; *) assert_eq 1 1 ;; esac
   cleanup_temp_state
 }
 test_should_remove_only_listed_panes() {
